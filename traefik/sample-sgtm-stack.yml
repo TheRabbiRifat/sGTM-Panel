@@ -1,0 +1,61 @@
+# Sample stack — illustrates the labels that the Control Plane writes
+# when deploying a new sGTM service. The Control Plane renders this
+# from a template and `docker stack deploy`s it on the chosen node.
+
+version: "3.9"
+
+services:
+  sgtm_abc123def456:
+    image: gcr.io/cloud-tagging-10302018/gtm-cloud-image:stable
+    environment:
+      CONTAINER_CONFIG: https://www.googletagmanager.com/static/container.json
+      LOADER_ID: lk_8f3a2c1b
+    networks:
+      - hostaffin_edge
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        max_attempts: 5
+    labels:
+      # ── Traefik routing ───────────────────────────
+      traefik.enable: "true"
+      traefik.docker.network: "hostaffin_edge"
+
+      # Main sGTM endpoint
+      traefik.http.routers.sgtm_abc123def456.rule: "Host(`abc123def456.edge.hostaffin.com`)"
+      traefik.http.routers.sgtm_abc123def456.entrypoints: "websecure"
+      traefik.http.routers.sgtm_abc123def456.tls: "true"
+      traefik.http.routers.sgtm_abc123def456.tls.certresolver: "letsencrypt"
+      traefik.http.services.sgtm_abc123def456.loadbalancer.server.port: "8080"
+
+      # Custom Loader (gated JS)
+      traefik.http.routers.sgtm_abc123_loader.rule: "Host(`abc123def456.edge.hostaffin.com`) && Path(`/loader.js`)"
+      traefik.http.routers.sgtm_abc123_loader.entrypoints: "websecure"
+      traefik.http.routers.sgtm_abc123_loader.tls: "true"
+      traefik.http.routers.sgtm_abc123_loader.tls.certresolver: "letsencrypt"
+      traefik.http.services.sgtm_abc123_loader.loadbalancer.server.port: "8080"
+
+      # Cookie Extension
+      traefik.http.routers.sgtm_abc123_cookie.rule: "Host(`abc123def456.edge.hostaffin.com`) && PathPrefix(`/cookie/`)"
+      traefik.http.routers.sgtm_abc123_cookie.entrypoints: "websecure"
+      traefik.http.routers.sgtm_abc123_cookie.tls: "true"
+      traefik.http.routers.sgtm_abc123_cookie.tls.certresolver: "letsencrypt"
+      traefik.http.routers.sgtm_abc123_cookie.middlewares: "strip-cookie-prefix"
+      traefik.http.middlewares.strip-cookie-prefix.stripprefix.prefixes: "/cookie"
+      traefik.http.services.sgtm_abc123_cookie.loadbalancer.server.port: "8080"
+
+      # ── Hostaffin metadata ────────────────────────
+      hostaffin.service_id: "11111111-1111-1111-1111-111111111111"
+      hostaffin.plan_slug: "starter"
+      hostaffin.loader_id: "lk_8f3a2c1b"
+
+networks:
+  hostaffin_edge:
+    external: true

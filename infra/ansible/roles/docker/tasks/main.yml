@@ -1,0 +1,36 @@
+---
+- name: Install Docker (Debian/Ubuntu)
+  when: ansible_os_family == 'Debian'
+  apt:
+    name:
+      - docker.io
+      - docker-compose-plugin
+    state: present
+    update_cache: yes
+
+- name: Install Docker (RHEL family)
+  when: ansible_os_family == 'RedHat'
+  yum:
+    name: docker
+    state: present
+
+- name: Ensure docker service is enabled and started
+  service:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Add hostaffin user to docker group
+  user:
+    name: hostaffin
+    groups: docker
+    append: yes
+    create: yes
+
+- name: Create hostaffin config directory
+  file:
+    path: /etc/hostaffin
+    state: directory
+    owner: hostaffin
+    group: hostaffin
+    mode: '0750'

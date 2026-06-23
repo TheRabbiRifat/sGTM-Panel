@@ -1,0 +1,39 @@
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+bin/
+dist/
+*.test
+*.out
+coverage.txt
+.env
+
+# Node
+node_modules/
+.next/
+.turbo/
+.pnpm-store/
+*.log
+
+# PHP / WHMCS
+vendor/
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Secrets
+*.pem
+*.key
+!.gitkeep
+
+# Local scratch
+muii-project/

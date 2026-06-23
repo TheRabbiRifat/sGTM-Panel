@@ -1,0 +1,38 @@
+---
+- name: Create traefik config directory
+  file:
+    path: /etc/traefik
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy traefik.yml
+  copy:
+    src: ../../../traefik/traefik.yml
+    dest: /etc/traefik/traefik.yml
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart traefik
+
+- name: Deploy traefik stack
+  command: docker stack deploy -c /etc/traefik/docker-compose.yml traefik
+  args:
+    chdir: /etc/traefik
+  register: deploy
+  changed_when: deploy.rc == 0
+
+- name: Label this node as edge
+  command: "docker node update --label-add hostaffin_role=edge {{ ansible_hostname }}"
+  delegate_to: "{{ groups['managers'][0] }}"
+  ignore_errors: yes
+
+- name: Create overlay network
+  command: docker network create --driver overlay --attachable hostaffin_edge
+  ignore_errors: yes
+
+handlers:
+  - name: restart traefik
+    command: docker service update --force traefik_traefik
+    ignore_errors: yes

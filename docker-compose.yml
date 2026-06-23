@@ -1,0 +1,126 @@
+# ───────────────────────────────────────────────
+# Hostaffin sGTM Platform — local dev stack
+# ───────────────────────────────────────────────
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sgtm-postgres
+    environment:
+      POSTGRES_USER: sgtm
+      POSTGRES_PASSWORD: sgtm
+      POSTGRES_DB: sgtm
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sgtm -d sgtm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: sgtm-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: sgtm-clickhouse
+    environment:
+      CLICKHOUSE_DB: sgtm
+      CLICKHOUSE_USER: sgtm
+      CLICKHOUSE_PASSWORD: sgtm
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    volumes:
+      - chdata:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  traefik:
+    image: traefik:v3.0
+    container_name: sgtm-traefik
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  control-plane:
+    build:
+      context: ./control-plane
+    container_name: sgtm-control-plane
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      HTTP_PORT: 8080
+      DATABASE_URL: postgres://sgtm:sgtm@postgres:5432/sgtm?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      CLICKHOUSE_URL: clickhouse://clickhouse:9000
+      JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:-}
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:-}
+      NODE_AGENT_SHARED_SECRET: ${NODE_AGENT_SHARED_SECRET:-dev-secret}
+      LOG_LEVEL: debug
+    ports:
+      - "8080:8080"
+
+  node-agent:
+    build:
+      context: ./node-agent
+    container_name: sgtm-node-agent
+    depends_on:
+      - control-plane
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:8080
+      NODE_ID: edge-local-01
+      NODE_API_KEY: dev-node-key
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  admin-panel:
+    build:
+      context: ./admin-panel
+    container_name: sgtm-admin-panel
+    depends_on:
+      - control-plane
+    environment:
+      NEXT_PUBLIC_CONTROL_PLANE_URL: http://localhost:8080
+      CONTROL_PLANE_URL: http://control-plane:8080
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  chdata:

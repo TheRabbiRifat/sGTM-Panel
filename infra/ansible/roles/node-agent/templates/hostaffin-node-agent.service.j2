@@ -1,0 +1,20 @@
+[Unit]
+Description=Hostaffin sGTM Node Agent
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=hostaffin
+Group=hostaffin
+ExecStart=/usr/local/bin/hostaffin-node-agent
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/hostaffin/node-agent.env
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

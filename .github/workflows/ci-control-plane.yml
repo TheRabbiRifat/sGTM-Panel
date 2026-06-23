@@ -1,0 +1,44 @@
+name: control-plane CI
+
+on:
+  push:
+    paths:
+      - "control-plane/**"
+      - ".github/workflows/ci-control-plane.yml"
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sgtm
+          POSTGRES_PASSWORD: sgtm
+          POSTGRES_DB: sgtm_test
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: control-plane/go.sum
+      - run: go vet ./...
+      - run: go test -race -cover ./...
+      - name: Build
+        run: |
+          go build -trimpath -ldflags="-s -w" -o out/api    ./cmd/api
+          go build -trimpath -ldflags="-s -w" -o out/worker ./cmd/worker
+          go build -trimpath -ldflags="-s -w" -o out/migrate ./cmd/migrate
+          go build -trimpath -ldflags="-s -w" -o out/seed    ./cmd/seed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-binaries
+          path: control-plane/out/

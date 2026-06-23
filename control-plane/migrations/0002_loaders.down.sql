@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS loader_configs;
+DROP TABLE IF EXISTS loaders;

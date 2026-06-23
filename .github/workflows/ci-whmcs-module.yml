@@ -1,0 +1,22 @@
+name: whmcs-module CI
+
+on:
+  push:
+    paths:
+      - "whmcs-module/**"
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+      - name: PHP syntax check
+        working-directory: whmcs-module
+        run: |
+          find . -name "*.php" -print0 | xargs -0 -n1 php -l
+      - name: Check for composer.json (none expected)
+        run: test ! -f whmcs-module/composer.json && echo OK

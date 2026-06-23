@@ -1,0 +1,37 @@
+---
+# ─────────────────────────────────────────────
+# Bootstrap a Hostaffin sGTM node
+# - Installs Docker + node-agent
+# - Joins the Docker Swarm (if manager)
+# - Optionally deploys Traefik
+# ─────────────────────────────────────────────
+- name: Bootstrap Hostaffin sGTM node
+  hosts: nodes
+  become: true
+  vars:
+    node_role: edge                # edge | worker
+    swarm_manager: ""              # host:port of an existing manager
+    control_plane_url: "https://control-plane.hostaffin.com"
+    node_id: "edge-fra-01"
+    node_api_key: "REPLACE_ME"
+  roles:
+    - { role: docker,   when: true }
+    - { role: traefik,  when: node_role == 'edge' }
+    - { role: node-agent }
+
+- name: Join swarm (managers)
+  hosts: managers
+  become: true
+  vars:
+    swarm_manager: ""
+  tasks:
+    - name: Get join token
+      delegate_to: localhost
+      become: false
+      command: docker swarm join-token -q manager
+      register: token
+      changed_when: false
+    - name: Join swarm as manager
+      when: swarm_manager | length > 0
+      command: "docker swarm join --token {{ token.stdout }} {{ swarm_manager }}:2377"
+      ignore_errors: yes
