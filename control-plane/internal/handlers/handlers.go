@@ -105,6 +105,7 @@ func MountAPI(app *fiber.App, d *Deps) {
 	v1.Put("/loaders/:loader_id/config", ldH.UpdateConfig)
 	v1.Post("/loaders/:loader_id/regenerate", auth.RequireRoles("super_admin", "admin"), ldH.Regenerate)
 	v1.Post("/loaders/:loader_id/disable", ldH.Disable)
+	v1.Post("/loaders/:loader_id/enable", ldH.Enable)
 	v1.Get("/loaders/:loader_id/analytics", ldH.Analytics)
 
 	// Cookie Extensions

@@ -109,6 +109,17 @@ func (s *Service) Disable(ctx context.Context, id, actor string) error {
 	return nil
 }
 
+// Enable re-activates a previously disabled loader.
+func (s *Service) Enable(ctx context.Context, id, actor string) error {
+	if err := s.repo.Enable(ctx, id); err != nil {
+		return err
+	}
+	_ = s.audit.Log(ctx, repos.AuditEntry{
+		ActorType: actor, Action: "loader.enable", Resource: "loader:" + id,
+	})
+	return nil
+}
+
 // RecordHit increments hit count and feeds the metering pipeline.
 func (s *Service) RecordHit(ctx context.Context, id string) error {
 	l, err := s.repo.GetByID(ctx, id)
@@ -134,6 +145,10 @@ func RenderLoader(loaderID string, c *domain.LoaderConfig) string {
 	if c != nil && c.AllowBots {
 		allowBots = "true"
 	}
+	honor := "true"
+	if c != nil && !c.HonorConsent {
+		honor = "false"
+	}
 	trigger := "immediate"
 	if c != nil && c.TriggerType != "" {
 		trigger = c.TriggerType
@@ -142,19 +157,48 @@ func RenderLoader(loaderID string, c *domain.LoaderConfig) string {
 	if c != nil {
 		triggerVal = c.TriggerValue
 	}
+	alias := "gtm.js"
+	if c != nil && c.JSFileAlias != "" {
+		alias = c.JSFileAlias
+	}
+	fbp := "_fbp"
+	if c != nil && c.FBPCookieName != "" {
+		fbp = c.FBPCookieName
+	}
+	fbc := "_fbc"
+	if c != nil && c.FBCCookieName != "" {
+		fbc = c.FBCCookieName
+	}
+	consentName := ""
+	if c != nil && c.CookieName != "" {
+		consentName = c.CookieName
+	}
 	return fmt.Sprintf(`// Hostaffin Custom Loader — %s
+// alias=%s fbp=%s fbc=%s consent=%s honor=%s trigger=%s
 (function(w,d,s,id){
   if (w.__hostaffinLoaderLoaded) return;
   w.__hostaffinLoaderLoaded = true;
   if (navigator.doNotTrack === '1' && %s) return;
   if (/bot|crawl|spider/i.test(navigator.userAgent) && !%s) return;
+  var consent = %s;
+  if (consent) {
+    var c = (w.Cookie || document.cookie).match ? null : null;
+    var m = document.cookie.match(new RegExp('(?:^|; )'+'%s'+'=(true|yes|1)','i'));
+    if (!m) return;
+  }
+  // Forward FBP/FBC into the loader run URL so the server can dedupe + report
+  var fbp = (document.cookie.match('(?:^|; )%s=([^;]+)')||[])[1] || '';
+  var fbc = (document.cookie.match('(?:^|; )%s=([^;]+)')||[])[1] || '';
   var gj = d.createElement(s);
   var r  = d.getElementsByTagName(s)[0];
   gj.async = true;
-  gj.src   = '/loader.js?run=1&id=' + encodeURIComponent(id);
+  gj.src   = '/%s?run=1&id=' + encodeURIComponent(id) +
+             '&fbp=' + encodeURIComponent(fbp) +
+             '&fbc=' + encodeURIComponent(fbc);
   gj.setAttribute('data-loader-id', id);
+  gj.setAttribute('data-alias', '%s');
   r.parentNode.insertBefore(gj, r);
 })(window, document, 'script', '%s');
-// trigger=%s value=%s
-`, loaderID, respectDNT, allowBots, loaderID, trigger, triggerVal)
+`, loaderID, alias, fbp, fbc, consentName, honor, trigger,
+		respectDNT, allowBots, honor, consentName, fbp, fbc, alias, alias, loaderID)
 }

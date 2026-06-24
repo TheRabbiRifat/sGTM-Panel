@@ -40,8 +40,10 @@ func (r *LoaderRepo) Create(ctx context.Context, l *domain.Loader, cfg *domain.L
 	cfg.LoaderID = l.LoaderID
 	cfg.UpdatedAt = time.Now()
 	if _, err := tx.NamedExecContext(ctx, `INSERT INTO loader_configs
-		(loader_id,trigger_type,trigger_value,cookie_name,respect_dnt,allow_bots,updated_at)
-		VALUES (:loader_id,:trigger_type,:trigger_value,:cookie_name,:respect_dnt,:allow_bots,:updated_at)`, cfg); err != nil {
+		(loader_id,trigger_type,trigger_value,cookie_name,respect_dnt,allow_bots,
+		 js_file_alias,fbp_cookie_name,fbc_cookie_name,honor_consent,vendor_mapping,updated_at)
+		VALUES (:loader_id,:trigger_type,:trigger_value,:cookie_name,:respect_dnt,:allow_bots,
+		 :js_file_alias,:fbp_cookie_name,:fbc_cookie_name,:honor_consent,:vendor_mapping,:updated_at)`, cfg); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -80,6 +82,11 @@ func (r *LoaderRepo) UpdateConfig(ctx context.Context, c *domain.LoaderConfig) e
 		cookie_name=:cookie_name,
 		respect_dnt=:respect_dnt,
 		allow_bots=:allow_bots,
+		js_file_alias=:js_file_alias,
+		fbp_cookie_name=:fbp_cookie_name,
+		fbc_cookie_name=:fbc_cookie_name,
+		honor_consent=:honor_consent,
+		vendor_mapping=:vendor_mapping,
 		updated_at=:updated_at
 		WHERE loader_id=:loader_id`, c)
 	return err
@@ -87,6 +94,11 @@ func (r *LoaderRepo) UpdateConfig(ctx context.Context, c *domain.LoaderConfig) e
 
 func (r *LoaderRepo) Disable(ctx context.Context, id string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE loaders SET is_active=FALSE WHERE loader_id=$1`, id)
+	return err
+}
+
+func (r *LoaderRepo) Enable(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE loaders SET is_active=TRUE WHERE loader_id=$1`, id)
 	return err
 }
 
@@ -115,8 +127,10 @@ func (r *LoaderRepo) Regenerate(ctx context.Context, oldID string) (string, erro
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO loader_configs
-		(loader_id,trigger_type,trigger_value,cookie_name,respect_dnt,allow_bots,updated_at)
-		SELECT $1, trigger_type, trigger_value, cookie_name, respect_dnt, allow_bots, $2
+		(loader_id,trigger_type,trigger_value,cookie_name,respect_dnt,allow_bots,
+		 js_file_alias,fbp_cookie_name,fbc_cookie_name,honor_consent,vendor_mapping,updated_at)
+		SELECT $1, trigger_type, trigger_value, cookie_name, respect_dnt, allow_bots,
+		       js_file_alias, fbp_cookie_name, fbc_cookie_name, honor_consent, vendor_mapping, $2
 		FROM loader_configs WHERE loader_id=$3`, newID, now, oldID); err != nil {
 		return "", err
 	}

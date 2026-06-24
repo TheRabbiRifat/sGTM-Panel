@@ -116,4 +116,27 @@ export const api = {
     cpFetch<any>(`/api/cookie-extensions/${id}/test`, { method: 'POST' }),
   serviceAction: (id: string, action: 'restart' | 'suspend' | 'unsuspend' | 'terminate') =>
     cpFetch<{ ok: boolean }>(`/api/services/${id}/${action}`, { method: 'POST' }),
+
+  /**
+   * Move a service container from its current master node to a different one.
+   * Used to rebalance load, drain a node for maintenance, or recover from a
+   * failed node. Like WHM's "Transfer Account" tool, this is admin-only.
+   *
+   * The control-plane worker re-pulls the container image on the target node,
+   * re-deploys it with the same plan / domain / loader / cookie settings,
+   * and updates the service's node_id. Traefik routes re-discover via
+   * Docker labels automatically.
+   */
+  moveService: (id: string, targetNodeId: string) =>
+    cpFetch<{ ok: boolean; action: string }>(`/api/services/${id}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ node_id: targetNodeId }),
+    }),
+
+  /**
+   * Drain a node (stop new containers landing on it) before moving services off.
+   * Optional but recommended before bulk-moves from a node.
+   */
+  drainNode: (id: string) =>
+    cpFetch<{ ok: boolean }>(`/api/nodes/${id}/drain`, { method: 'POST' }),
 };

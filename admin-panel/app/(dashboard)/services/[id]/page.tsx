@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { fmtBytes, fmtDate, fmtNumber } from '@/lib/utils';
 import { LoaderManager } from '@/components/features/loaders';
 import { CookieExtensions } from '@/components/features/cookies';
+import { MoveServiceDialog } from '@/components/features/move-service';
 
 export default function ServiceDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -32,6 +33,7 @@ export default function ServiceDetail({ params }: { params: Promise<{ id: string
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => action.mutate('restart')}>Restart</Button>
+          <MoveServiceDialog service={service} />
           {service.status === 'active'
             ? <Button variant="outline" onClick={() => action.mutate('suspend')}>Suspend</Button>
             : <Button onClick={() => action.mutate('unsuspend')}>Unsuspend</Button>}
@@ -48,7 +50,7 @@ export default function ServiceDetail({ params }: { params: Promise<{ id: string
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
-          <div className="grid md:grid-cols-3 gap-4">
+          <div className="grid md:grid-cols-4 gap-4">
             <Card>
               <CardHeader>
                 <CardDescription>Status</CardDescription>
@@ -65,6 +67,14 @@ export default function ServiceDetail({ params }: { params: Promise<{ id: string
                   Bandwidth: {fmtBytes(Number(usage?.month?.bandwidth_b ?? 0))}
                 </div>
               </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardDescription>Node</CardDescription>
+                <CardTitle className="text-base font-mono">
+                  {service.node_id ? service.node_id.slice(0, 8) + '…' : 'unassigned'}
+                </CardTitle>
+              </CardHeader>
             </Card>
             <Card>
               <CardHeader>

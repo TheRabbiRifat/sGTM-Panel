@@ -40,6 +40,12 @@ type createLoaderReq struct {
 	CookieName   string            `json:"cookie_name"`
 	RespectDNT   *bool             `json:"respect_dnt"`
 	AllowBots    *bool             `json:"allow_bots"`
+	// New in 0005
+	JSFileAlias   string                 `json:"js_file_alias"`
+	FBPCookieName string                 `json:"fbp_cookie_name"`
+	FBCCookieName string                 `json:"fbc_cookie_name"`
+	HonorConsent  *bool                  `json:"honor_consent"`
+	VendorMapping map[string]interface{} `json:"vendor_mapping"`
 }
 
 func (h *LoaderHandler) Create(c *fiber.Ctx) error {
@@ -63,13 +69,38 @@ func (h *LoaderHandler) Create(c *fiber.Ctx) error {
 	if req.AllowBots != nil {
 		allow = *req.AllowBots
 	}
+	honor := true
+	if req.HonorConsent != nil {
+		honor = *req.HonorConsent
+	}
+	alias := req.JSFileAlias
+	if alias == "" {
+		alias = "gtm.js"
+	}
+	fbp := req.FBPCookieName
+	if fbp == "" {
+		fbp = "_fbp"
+	}
+	fbc := req.FBCCookieName
+	if fbc == "" {
+		fbc = "_fbc"
+	}
+	vendor := req.VendorMapping
+	if vendor == nil {
+		vendor = map[string]interface{}{}
+	}
 	l := &domain.Loader{ServiceID: sid, Mode: mode, IsActive: true}
 	cfg := &domain.LoaderConfig{
-		TriggerType:  req.TriggerType,
-		TriggerValue: req.TriggerValue,
-		CookieName:   req.CookieName,
-		RespectDNT:   respect,
-		AllowBots:    allow,
+		TriggerType:   req.TriggerType,
+		TriggerValue:  req.TriggerValue,
+		CookieName:    req.CookieName,
+		RespectDNT:    respect,
+		AllowBots:     allow,
+		JSFileAlias:   alias,
+		FBPCookieName: fbp,
+		FBCCookieName: fbc,
+		HonorConsent:  honor,
+		VendorMapping: vendor,
 	}
 	if err := h.svc.Create(c.Context(), l, cfg); err != nil {
 		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
@@ -103,11 +134,16 @@ func (h *LoaderHandler) Get(c *fiber.Ctx) error {
 func (h *LoaderHandler) UpdateConfig(c *fiber.Ctx) error {
 	id := c.Params("loader_id")
 	var req struct {
-		TriggerType  string `json:"trigger_type"`
-		TriggerValue string `json:"trigger_value"`
-		CookieName   string `json:"cookie_name"`
-		RespectDNT   *bool  `json:"respect_dnt"`
-		AllowBots    *bool  `json:"allow_bots"`
+		TriggerType   string                 `json:"trigger_type"`
+		TriggerValue  string                 `json:"trigger_value"`
+		CookieName    string                 `json:"cookie_name"`
+		RespectDNT    *bool                  `json:"respect_dnt"`
+		AllowBots     *bool                  `json:"allow_bots"`
+		JSFileAlias   string                 `json:"js_file_alias"`
+		FBPCookieName string                 `json:"fbp_cookie_name"`
+		FBCCookieName string                 `json:"fbc_cookie_name"`
+		HonorConsent  *bool                  `json:"honor_consent"`
+		VendorMapping map[string]interface{} `json:"vendor_mapping"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid body")
@@ -126,6 +162,21 @@ func (h *LoaderHandler) UpdateConfig(c *fiber.Ctx) error {
 	}
 	if req.AllowBots != nil {
 		cfg.AllowBots = *req.AllowBots
+	}
+	if req.JSFileAlias != "" {
+		cfg.JSFileAlias = req.JSFileAlias
+	}
+	if req.FBPCookieName != "" {
+		cfg.FBPCookieName = req.FBPCookieName
+	}
+	if req.FBCCookieName != "" {
+		cfg.FBCCookieName = req.FBCCookieName
+	}
+	if req.HonorConsent != nil {
+		cfg.HonorConsent = *req.HonorConsent
+	}
+	if req.VendorMapping != nil {
+		cfg.VendorMapping = req.VendorMapping
 	}
 	if err := h.svc.UpdateConfig(c.Context(), cfg); err != nil {
 		return err
@@ -153,6 +204,18 @@ func (h *LoaderHandler) Disable(c *fiber.Ctx) error {
 		actor = cl.Email
 	}
 	if err := h.svc.Disable(c.Context(), id, actor); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+func (h *LoaderHandler) Enable(c *fiber.Ctx) error {
+	id := c.Params("loader_id")
+	actor := "admin"
+	if cl := auth.MustClaims(c); cl != nil {
+		actor = cl.Email
+	}
+	if err := h.svc.Enable(c.Context(), id, actor); err != nil {
 		return err
 	}
 	return c.JSON(fiber.Map{"ok": true})

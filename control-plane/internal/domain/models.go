@@ -139,13 +139,19 @@ type Loader struct {
 }
 
 type LoaderConfig struct {
-	LoaderID     string `db:"loader_id" json:"loader_id"`
-	TriggerType  string `db:"trigger_type" json:"trigger_type"`
-	TriggerValue string `db:"trigger_value" json:"trigger_value,omitempty"`
-	CookieName   string `db:"cookie_name" json:"cookie_name,omitempty"`
-	RespectDNT   bool   `db:"respect_dnt" json:"respect_dnt"`
-	AllowBots    bool   `db:"allow_bots" json:"allow_bots"`
-	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
+	LoaderID     string         `db:"loader_id" json:"loader_id"`
+	TriggerType  string         `db:"trigger_type" json:"trigger_type"`
+	TriggerValue string         `db:"trigger_value" json:"trigger_value,omitempty"`
+	CookieName   string         `db:"cookie_name" json:"cookie_name,omitempty"`
+	RespectDNT   bool           `db:"respect_dnt" json:"respect_dnt"`
+	AllowBots    bool           `db:"allow_bots" json:"allow_bots"`
+	// New in 0005: alias + Facebook cookie mapping
+	JSFileAlias   string                 `db:"js_file_alias" json:"js_file_alias"`
+	FBPCookieName string                 `db:"fbp_cookie_name" json:"fbp_cookie_name"`
+	FBCCookieName string                 `db:"fbc_cookie_name" json:"fbc_cookie_name"`
+	HonorConsent  bool                   `db:"honor_consent" json:"honor_consent"`
+	VendorMapping map[string]interface{} `db:"vendor_mapping" json:"vendor_mapping"`
+	UpdatedAt     time.Time              `db:"updated_at" json:"updated_at"`
 }
 
 type CookieExtension struct {
