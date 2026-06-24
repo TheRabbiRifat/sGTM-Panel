@@ -3,7 +3,9 @@
 # install-interactive.sh — Hostaffin sGTM Platform interactive wizard
 # ───────────────────────────────────────────────────────────────────────
 # A guided, ASCII-UI installer that walks you through every important
-# decision, then hands off to the canonical install-almalinux9.sh script.
+# decision, then hands off to the canonical install-almalinux9.sh script
+# (the underlying installer, which now supports any YUM-family distro and
+# auto-detects dnf vs yum via lib-pm.sh).
 #
 # It prompts for:
 #   • Timezone
@@ -75,23 +77,41 @@ require_root() {
   fi
 }
 
-require_almalinux() {
+require_yum_distro() {
   if [[ ! -f /etc/os-release ]]; then
     ui_err "Cannot detect /etc/os-release"
     exit 4
   fi
   # shellcheck disable=SC1091
   . /etc/os-release
-  if [[ "${ID:-}" != "almalinux" && "${ID:-}" != "rocky" && "${ID:-}" != "rhel" \
-     && "${ID_LIKE:-}" != *"rhel"* && "${ID_LIKE:-}" != *"centos"* ]]; then
-    ui_err "This installer targets Alma Linux 9 (detected: $ID $VERSION_ID)."
-    ui_err "Re-run on AlmaLinux 9 / Rocky 9 / RHEL 9, or fork the script."
+
+  # Accept any YUM-family distro: Alma / Rocky / RHEL / CentOS Stream /
+  # Oracle / Fedora / Amazon Linux. Anything apt/deb-based is rejected
+  # here because the rest of the stack assumes RPM and dnf/yum.
+  local id="${ID:-}"
+  local id_like="${ID_LIKE:-}"
+  local ok=0
+  case "$id" in
+    almalinux|rocky|rhel|centos|fedora|ol|amzn) ok=1 ;;
+  esac
+  if [[ "$id_like" == *"rhel"* || "$id_like" == *"centos"* || "$id_like" == *"fedora"* ]]; then
+    ok=1
+  fi
+
+  if [[ $ok -eq 0 ]]; then
+    ui_err "This installer requires a YUM-family distro (dnf or yum)."
+    ui_err "Detected: ${id:-unknown} ${VERSION_ID:-} (id_like='${id_like:-}')."
+    ui_err "Re-run on AlmaLinux / Rocky / RHEL / CentOS Stream / Oracle / Fedora / Amazon Linux,"
+    ui_err "or fork the script for your distro."
     exit 4
   fi
-  if [[ "${VERSION_ID%%.*}" != "9" ]]; then
-    ui_err "Alma Linux major version 9 required (detected: $VERSION_ID)"
-    exit 4
-  fi
+
+  # Auto-detect dnf vs yum via lib-pm.sh.
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/lib-pm.sh"
+  pm_detect || { ui_err "Neither dnf nor yum was found in PATH."; exit 4; }
+  export HOSTAFFIN_PM="$PM_GLOBAL"
+  ui_info "Detected YUM-family distro: ${PRETTY_NAME:-?} (using $PM_GLOBAL)"
 }
 
 # ──────────────────────────── Config save/load ──────────────────────────
@@ -355,7 +375,7 @@ EOF
 # ──────────────────────────── Run installer ─────────────────────────────
 run_installer() {
   ui_hr
-  ui_info "Handing off to install-almalinux9.sh with collected options…"
+  ui_info "Handing off to the YUM-family installer with collected options…"
   ui_hr
 
   local args=(
@@ -437,7 +457,7 @@ EOF
 
 # ──────────────────────────── Main ──────────────────────────────────────
 require_root
-require_almalinux
+require_yum_distro
 
 # Load config if provided
 if [[ -n "$CONFIG_FILE" ]]; then

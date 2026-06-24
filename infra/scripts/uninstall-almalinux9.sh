@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ───────────────────────────────────────────────────────────────────────
-# Hostaffin sGTM Hosting Platform — Uninstaller for Alma Linux 9
+# Hostaffin sGTM Hosting Platform — Uninstaller for YUM-family distros
 # ───────────────────────────────────────────────────────────────────────
 # Reverses everything installed by install-almalinux9.sh:
 #
@@ -55,6 +55,14 @@
 
 set -euo pipefail
 IFS=$'\n\t'
+
+# Use the same package-manager detection as the installer so removal works
+# on either dnf (RHEL 8+, Fedora, Alma, Rocky, CentOS Stream, OL 8+, AL2023)
+# or yum (RHEL 7, CentOS 7, Amazon Linux 2).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib-pm.sh"
+pm_detect || true
 
 # ───────────────────────────── Defaults ─────────────────────────────────
 MODE="${HOSTAFFIN_MODE:-local}"
@@ -429,7 +437,7 @@ remove_docker() {
     log "  · Skipped per user"
     return 0
   fi
-  run_soft dnf -y remove docker-ce docker-ce-cli containerd.io \
+  run_soft pm_remove docker-ce docker-ce-cli containerd.io \
     docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras || true
   ok "Docker Engine packages removed"
 }

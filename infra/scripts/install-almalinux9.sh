@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ───────────────────────────────────────────────────────────────────────
-# Hostaffin sGTM Hosting Platform — Installer for Alma Linux 9
+# Hostaffin sGTM Hosting Platform — Installer for YUM-family distros
 # ───────────────────────────────────────────────────────────────────────
-# This script provisions a fresh Alma Linux 9 host with everything
-# needed to run the Hostaffin sGTM Platform:
+# This script provisions a fresh YUM-based host (Alma / Rocky / RHEL /
+# CentOS / Oracle / Fedora / Amazon Linux) with everything needed to
+# run the Hostaffin sGTM Platform:
 #
 #   ✓ System updates + EPEL
 #   ✓ Firewalld rules (80, 443, 8080, 9000, 8123, 5432, 6379, 3000)
-#   ✓ SELinux adjustments
+#   ✓ SELinux adjustments (when present)
 #   ✓ Docker Engine + Compose plugin
 #   ✓ Docker Swarm init (or join)
 #   ✓ Overlay network hostaffin_edge
@@ -28,6 +29,15 @@
 # "edge" or "slave" role. Any node can run Traefik and serve customers.
 #   --mode controlplane  Control plane + DB stack only (no Traefik/node-agent)
 #
+# Supported distros (any YUM-based system with dnf or yum):
+#   • AlmaLinux 8 / 9
+#   • Rocky Linux 8 / 9
+#   • RHEL 8 / 9
+#   • CentOS Stream 8 / 9
+#   • Oracle Linux 8 / 9
+#   • Fedora 36+
+#   • Amazon Linux 2 (yum) and Amazon Linux 2023 (dnf)
+#
 # Usage:
 #   sudo ./install-almalinux9.sh [--mode MODE] [--join-token TOKEN]
 #                                [--manager-addr ADDR] [--control-plane-url URL]
@@ -37,7 +47,8 @@
 #
 # Environment overrides (same names, uppercase, with HOSTAFFIN_ prefix):
 #   HOSTAFFIN_MODE, HOSTAFFIN_JOIN_TOKEN, HOSTAFFIN_MANAGER_ADDR,
-#   HOSTAFFIN_CONTROL_PLANE_URL, HOSTAFFIN_NODE_ID, HOSTAFFIN_NODE_API_KEY
+#   HOSTAFFIN_CONTROL_PLANE_URL, HOSTAFFIN_NODE_ID, HOSTAFFIN_NODE_API_KEY,
+#   HOSTAFFIN_PM=dnf|yum (force a specific package manager)
 #
 # Exit codes:
 #   0  success
@@ -50,6 +61,11 @@
 
 set -euo pipefail
 IFS=$'\n\t'
+
+# Pull in the shared package-manager helpers (auto-detects dnf vs yum).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib-pm.sh"
 
 # ───────────────────────────── Defaults ─────────────────────────────────
 MODE="${HOSTAFFIN_MODE:-local}"
@@ -116,22 +132,39 @@ require_root() {
   fi
 }
 
-require_almalinux() {
+require_yum_distro() {
   if [[ ! -f /etc/os-release ]]; then
     err "Cannot detect /etc/os-release"
     exit 4
   fi
   # shellcheck disable=SC1091  # /etc/os-release is provided by systemd at runtime
   . /etc/os-release
-  if [[ "${ID:-}" != "almalinux" && "${ID_LIKE:-}" != *"rhel"* && "${ID_LIKE:-}" != *"centos"* && "${ID:-}" != "rocky" ]]; then
-    err "This installer targets Alma Linux 9 (detected: $ID $VERSION_ID)."
-    err "Re-run on AlmaLinux 9 / Rocky 9 / RHEL 9, or fork the script."
+
+  # Accept any YUM-family distro: Alma / Rocky / RHEL / CentOS Stream /
+  # Oracle / Fedora / Amazon Linux (both v2 and v2023). Reject anything
+  # apt/deb-based or musl-based; the rest of the script depends on RPM.
+  local id="${ID:-}"
+  local id_like="${ID_LIKE:-}"
+  local is_yum=0
+  case "$id" in
+    almalinux|rocky|rhel|centos|fedora|ol|amzn) is_yum=1 ;;
+  esac
+  if [[ "$id_like" == *"rhel"* || "$id_like" == *"centos"* || "$id_like" == *"fedora"* ]]; then
+    is_yum=1
+  fi
+
+  if [[ $is_yum -eq 0 ]]; then
+    err "This installer requires a YUM-family distro (dnf or yum)."
+    err "Detected: ${id:-unknown} ${VERSION_ID:-} (id_like='${id_like:-}')."
+    err "Re-run on AlmaLinux / Rocky / RHEL / CentOS Stream / Oracle / Fedora / Amazon Linux,"
+    err "or fork the script for your distro."
     exit 4
   fi
-  if [[ "${VERSION_ID%%.*}" != "9" ]]; then
-    err "Alma Linux major version 9 required (detected: $VERSION_ID)"
-    exit 4
-  fi
+
+  # We need *some* working PM. lib-pm.sh detects this, but if both dnf and
+  # yum are missing (e.g. minimal container) we fail fast with a clear msg.
+  pm_detect || { err "Neither dnf nor yum found in PATH"; exit 4; }
+  log "Detected YUM-family distro: $PRETTY_NAME (using $PM_GLOBAL)"
 }
 
 confirm() {
@@ -150,13 +183,13 @@ confirm() {
 # ─────────────────────────── Package management ─────────────────────────
 install_packages() {
   hr; log "Installing base packages…"
-  dnf -y install \
+  pm_install \
     curl wget tar gzip ca-certificates \
     yum-utils epel-release \
     git make jq openssl \
     firewalld policycoreutils-python-utils \
     rsync htop bind-utils \
-    || { err "dnf install failed"; exit 1; }
+    || { err "$PM_GLOBAL install failed"; exit 1; }
   ok "Base packages installed"
 }
 
@@ -240,11 +273,11 @@ install_docker() {
       warn "Existing Docker version ${cur}; will leave in place"
     fi
   else
-    dnf -y remove docker docker-client docker-client-latest docker-common \
+    pm_remove docker docker-client docker-client-latest docker-common \
       docker-latest docker-latest-logrotate docker-engine podman runc 2>/dev/null || true
-    dnf -y install dnf-plugins-core
-    dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    dnf -y install \
+    pm_install dnf-plugins-core yum-utils >/dev/null 2>&1 || true
+    pm_addrepo https://download.docker.com/linux/centos/docker-ce.repo
+    pm_install \
       docker-ce-${DOCKER_VERSION} \
       docker-ce-cli-${DOCKER_VERSION} \
       containerd.io \
@@ -559,7 +592,7 @@ build_or_pull_images() {
     if ! command -v node >/dev/null; then
       warn "Installing Node.js ${NODE_VERSION}…"
       curl -fsSL https://rpm.nodesource.com/setup_${NODE_VERSION}.x | bash -
-      dnf -y install nodejs
+      pm_install nodejs
     fi
     cd "$PROJECT_DIR/admin-panel"
     docker build -t hostaffin/admin-panel:latest .
@@ -735,7 +768,7 @@ EOF
 
 # ──────────────────────────── Main flow ─────────────────────────────────
 require_root
-require_almalinux
+require_yum_distro
 
 log "Hostaffin sGTM Platform installer"
 log "Mode: $MODE"
