@@ -172,7 +172,7 @@
 ### 3.3 Request Flow (Customer → sGTM)
 
 1. End-user browser hits `https://track.client.com/...` also default one from us
-2. DNS CNAMEs to edge node where Traefik is reachable.
+2. DNS CNAMEs to a master node where Traefik is reachable.
 3. Traefik matches host header → routes to specific sGTM container service in Swarm.
 4. Traefik terminates TLS (Let's Encrypt cert).
 5. Container handles GTM request.
@@ -820,7 +820,8 @@ Agent then writes to ClickHouse via Control Plane's ingestion API.
 
 - **Manager node(s):** run Traefik + Control Plane worker can also be here.
 - **Worker nodes:** host sGTM containers + node-agent.
-- **Edge label:** `hostaffin_role=edge` for nodes that should run Traefik.
+- **Master label:** `hostaffin_role=master` — every node is a master node;
+  there is no separate "edge" or "slave" role. All nodes can run Traefik.
 
 ---
 

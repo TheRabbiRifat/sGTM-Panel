@@ -45,7 +45,7 @@ If a customer's `edge_hostname` is locked to the failed node:
 
 - The control plane picks a new node and redeploys the container.
 - Traefik re-discovers via Docker labels.
-- DNS for `*.edge.hostaffin.com` is wildcard CNAMEd to all edge nodes; no customer-side change needed.
+- DNS for `*.edge.hostaffin.com` is wildcard CNAMEd to all master nodes; no customer-side change needed.
 
 ### 5. Notify affected customers
 

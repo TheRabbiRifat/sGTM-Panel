@@ -50,7 +50,7 @@ cookie extensions, and billing.
 - **WHMCS-native provisioning** — purchase, suspend, unsuspend, terminate, and
   change-package flows are all wired to the WHMCS module.
 - **Multi-tenant Docker Swarm** — one container per customer, scheduled across
-  edge nodes with a `hostaffin_role=edge` label.
+  master nodes with a `hostaffin_role=master` label.
 - **Traefik v3 reverse proxy** with automatic Let's Encrypt certificates via
   HTTP-01 ACME challenges.
 - **JWT (RS256) auth + Argon2id password hashing** with role-based access
@@ -205,14 +205,39 @@ curl -fsSL https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra
 This installs the **local all-in-one** profile (single host, single swarm
 manager) — perfect for production start or for setting up a staging env.
 
+### Interactive wizard (recommended for first-time installs)
+
+```bash
+sudo ./infra/scripts/install-interactive.sh
+```
+
+The wizard is a guided, full-screen TUI with an ASCII banner that walks
+you through every important decision:
+
+1. **Timezone** — used for logs, scheduled jobs, ACME windows
+2. **Public DNS wildcard hostname** — e.g. `edge.hostaffin.com`
+3. **Install mode** — `local`, `master`, or `controlplane`
+4. **Swarm join details** *(master mode only)* — manager address + token
+5. **Admin account** — email + password (or auto-generate)
+6. **GHCR token** *(optional)* — pull prebuilt images
+7. **Advanced** — firewall / swap / node ID
+8. **Review** — confirm before anything is installed
+
+Each step has a progress bar; long-running commands show a spinner.
+You can save your answers with `--save-config answers.env` and re-run
+unattended with `--config answers.env --non-interactive`.
+
 ### Modes
 
 | Mode          | Use case                                  | What gets installed                              |
 | ------------- | ----------------------------------------- | ------------------------------------------------ |
 | `local`       | all-in-one single host (default)          | everything: DB, control plane, traefik, agent     |
-| `edge`        | join an existing swarm as an edge node    | docker + traefik + node-agent only               |
-| `worker`      | join an existing swarm as a worker        | docker + node-agent only                         |
+| `master`      | join an existing swarm as a master node   | docker + traefik + node-agent only               |
 | `controlplane`| control plane + DB stack only             | docker, postgres/redis/clickhouse, control plane  |
+
+> Every node in the cluster is a **master** node — there is no separate
+> "edge" or "slave" role. Any node can run Traefik and serve customer
+> containers.
 
 ### Provision a fleet
 
@@ -222,30 +247,25 @@ sudo ./infra/scripts/install-almalinux9.sh \
   --mode local --non-interactive
 # → saves join token + manager IP; copy them.
 
-# 2. On each additional edge node
+# 2. On each additional master node
 sudo ./infra/scripts/install-almalinux9.sh \
-  --mode edge \
-  --join-token <WORKER-TOKEN> \
-  --manager-addr <MANAGER-IP>:2377 \
-  --non-interactive
-
-# 3. On each additional worker node
-sudo ./infra/scripts/install-almalinux9.sh \
-  --mode worker \
+  --mode master \
   --join-token <WORKER-TOKEN> \
   --manager-addr <MANAGER-IP>:2377 \
   --non-interactive
 ```
 
+> There is no separate `--mode worker` anymore — every node is a master.
+
 ### Useful flags
 
 | Flag                      | Description                                                |
 | ------------------------- | ---------------------------------------------------------- |
-| `--mode {local,edge,worker,controlplane}` | install profile (default: `local`)            |
-| `--join-token TOKEN`      | swarm worker join token (required for `edge` / `worker`)   |
+| `--mode {local,master,controlplane}` | install profile (default: `local`)            |
+| `--join-token TOKEN`      | swarm worker join token (required for `master`)   |
 | `--manager-addr ADDR`     | `<ip>:2377` of an existing manager                        |
 | `--control-plane-url URL` | public URL of the control plane (for the node-agent)       |
-| `--node-id ID`            | override the auto-generated `edge-<host>-01` ID            |
+| `--node-id ID`            | override the auto-generated `master-<host>-01` ID          |
 | `--node-api-key KEY`      | pre-shared HMAC key with the control plane                 |
 | `--github-token TOKEN`    | GHCR PAT for pulling pre-built images                      |
 | `--project-dir DIR`       | override `/opt/hostaffin`                                  |
@@ -264,7 +284,7 @@ All flags also accept `HOSTAFFIN_<UPPER_SNAKE_CASE>` env-var overrides.
   9100, 8123, 9000)
 - Adjusts **SELinux** (custom `hostaffin` policy module for Traefik)
 - Initializes or joins a **Docker Swarm**
-- Labels the node with `hostaffin_role=edge`
+- Labels the node with `hostaffin_role=master`
 - Creates the `hostaffin_edge` overlay network
 - Installs **Traefik v3** as a systemd-managed, host-networked container
 - Installs the **node-agent** as a systemd service
@@ -420,8 +440,10 @@ See [`docs/api.md`](./docs/api.md) for the full REST surface. Highlights:
 
 ## Operations
 
-- **Add an edge node** → [`docs/runbooks/add-node.md`](./docs/runbooks/add-node.md)
+- **Add a master node** → [`docs/runbooks/add-node.md`](./docs/runbooks/add-node.md)
 - **Failover** → [`docs/runbooks/failover.md`](./docs/runbooks/failover.md)
+- **Interactive install** → `sudo ./infra/scripts/install-interactive.sh`
+- **Unattended re-install** → `sudo ./infra/scripts/install-interactive.sh --config answers.env --non-interactive`
 - **Rotate JWT keys** → `sudo ./infra/scripts/rotate-jwt.sh`
 - **Backup** → `sudo ./infra/scripts/backup.sh` (postgres → S3)
 - **ADR-0001: why Docker Swarm, not Kubernetes** →

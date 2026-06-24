@@ -8,7 +8,7 @@ infra/
 │   ├── playbook-node.yml          # bootstrap a new node
 │   └── roles/
 │       ├── docker/                # install Docker
-│       ├── traefik/               # install Traefik (edge nodes)
+│       ├── traefik/               # install Traefik (runs on every master node)
 │       └── node-agent/            # install + start the node agent
 ├── systemd/
 │   └── hostaffin-node-agent.service

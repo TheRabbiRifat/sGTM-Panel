@@ -43,7 +43,7 @@ func (r *NodeRepo) List(ctx context.Context) ([]domain.Node, error) {
 func (r *NodeRepo) ListOnline(ctx context.Context) ([]domain.Node, error) {
 	var out []domain.Node
 	err := r.db.SelectContext(ctx, &out,
-		`SELECT * FROM nodes WHERE status='online' AND is_edge=TRUE ORDER BY hostname`)
+		`SELECT * FROM nodes WHERE status='online' AND role='master' ORDER BY hostname`)
 	return out, err
 }
 
@@ -51,15 +51,20 @@ func (r *NodeRepo) Upsert(ctx context.Context, n *domain.Node) error {
 	if n.ID == uuid.Nil {
 		n.ID = uuid.New()
 	}
+	// Every node is a master node — there is no slave role. Force role='master'
+	// on insert to enforce that invariant at the data layer.
+	if n.Role == "" {
+		n.Role = domain.NodeRoleMaster
+	}
 	_, err := r.db.NamedExecContext(ctx, `INSERT INTO nodes
-		(id,hostname,region,status,total_cpu,total_ram_mb,is_edge)
-		VALUES (:id,:hostname,:region,:status,:total_cpu,:total_ram_mb,:is_edge)
+		(id,hostname,region,status,total_cpu,total_ram_mb,role)
+		VALUES (:id,:hostname,:region,:status,:total_cpu,:total_ram_mb,:role)
 		ON CONFLICT (hostname) DO UPDATE SET
 			region=EXCLUDED.region,
 			status=EXCLUDED.status,
 			total_cpu=EXCLUDED.total_cpu,
 			total_ram_mb=EXCLUDED.total_ram_mb,
-			is_edge=EXCLUDED.is_edge`, n)
+			role=EXCLUDED.role`, n)
 	return err
 }
 

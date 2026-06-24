@@ -38,7 +38,7 @@ export type Node = {
   used_ram_mb: number;
   container_count: number;
   last_heartbeat?: string;
-  is_edge: boolean;
+  role: 'master';
 };
 
 export type Loader = {

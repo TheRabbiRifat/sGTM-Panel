@@ -51,6 +51,15 @@ const (
 	NodeDisabled    NodeStatus = "disabled"
 )
 
+// NodeRole identifies the role of a node in the cluster. Every node is a
+// master node — there is no slave/non-edge role. The constant is retained
+// for forward-compatibility but the only legal value is "master".
+type NodeRole string
+
+const (
+	NodeRoleMaster NodeRole = "master"
+)
+
 type Node struct {
 	ID             uuid.UUID  `db:"id" json:"id"`
 	Hostname       string     `db:"hostname" json:"hostname"`
@@ -63,7 +72,7 @@ type Node struct {
 	ContainerCount int        `db:"container_count" json:"container_count"`
 	LastHeartbeat  *time.Time `db:"last_heartbeat" json:"last_heartbeat,omitempty"`
 	AgentVersion   *string    `db:"agent_version" json:"agent_version,omitempty"`
-	IsEdge         bool       `db:"is_edge" json:"is_edge"`
+	Role           NodeRole   `db:"role" json:"role"`
 	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
 }
 

@@ -30,7 +30,7 @@ export default function NodesPage() {
                 <Badge variant={variant[n.status]}>{n.status}</Badge>
               </div>
               <div className="text-xs text-muted-foreground">
-                Edge: {n.is_edge ? 'yes' : 'no'} · {n.region ?? 'no region'}
+                Role: {n.role} · {n.region ?? 'no region'}
               </div>
               <div className="grid grid-cols-3 gap-2 text-sm">
                 <Stat label="CPU" value={`${fmtNumber(n.used_cpu)}/${fmtNumber(n.total_cpu)}`} />

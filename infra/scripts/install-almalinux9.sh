@@ -11,7 +11,7 @@
 #   ✓ Docker Engine + Compose plugin
 #   ✓ Docker Swarm init (or join)
 #   ✓ Overlay network hostaffin_edge
-#   ✓ Node label hostaffin_role=edge
+#   ✓ Node label hostaffin_role=master
 #   ✓ Node Agent (systemd)
 #   ✓ Traefik reverse proxy (systemd, host-network)
 #   ✓ Project workspace under /opt/hostaffin
@@ -22,8 +22,10 @@
 #
 # Modes:
 #   --mode local       Single-host all-in-one (default for dev)
-#   --mode edge        Edge node only (Traefik + node-agent, joins swarm)
-#   --mode worker      Worker node only (node-agent, joins swarm)
+#   --mode master      Master node only (Traefik + node-agent, joins swarm)
+#
+# Every node in the cluster is a master node — there is no separate
+# "edge" or "slave" role. Any node can run Traefik and serve customers.
 #   --mode controlplane  Control plane + DB stack only (no Traefik/node-agent)
 #
 # Usage:
@@ -276,9 +278,9 @@ ensure_swarm() {
         || docker swarm init --advertise-addr 127.0.0.1
       ok "Swarm initialised as manager (advertise $advertise)"
       ;;
-    edge|worker)
+    master)
       if [[ -z "$JOIN_TOKEN" || -z "$MANAGER_ADDR" ]]; then
-        err "edge/worker mode requires --join-token and --manager-addr"
+        err "master mode requires --join-token and --manager-addr"
         exit 2
       fi
       log "Joining Swarm at ${MANAGER_ADDR}…"
@@ -290,13 +292,14 @@ ensure_swarm() {
   esac
 }
 
-label_node_edge() {
-  if [[ "$MODE" == "edge" || "$MODE" == "local" ]]; then
-    log "Labelling node as edge…"
+label_node_master() {
+  # Every node is a master node — no edge/slave distinction.
+  if [[ "$MODE" == "master" || "$MODE" == "local" ]]; then
+    log "Labelling node as master…"
     sleep 3  # swarm needs a moment
     local id
     id=$(docker node ls --format '{{.Self}}' 2>/dev/null | head -n1 || hostname)
-    docker node update --label-add hostaffin_role=edge "$id" || \
+    docker node update --label-add hostaffin_role=master "$id" || \
       warn "Could not label node (acceptable in single-node mode)"
     ok "Node labelled"
   fi
@@ -368,7 +371,7 @@ write_env() {
   local admin_pwd="${HOSTAFFIN_ADMIN_PASSWORD:-$(openssl rand -base64 18 | tr -d '=+/')}"
   local node_secret="${NODE_API_KEY:-$(openssl rand -hex 24)}"
   if [[ -z "$NODE_ID" ]]; then
-    NODE_ID="edge-$(hostname -s | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')-01"
+    NODE_ID="master-$(hostname -s | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')-01"
   fi
   cat >"$ENV_FILE" <<EOF
 # Hostaffin sGTM Platform — environment
@@ -411,9 +414,9 @@ EOF
   chmod 0600 /root/.hostaffin-admin-password
 }
 
-# ─────────────────────────── Traefik (edge mode) ────────────────────────
+# ─────────────────────────── Traefik (master mode) ────────────────────────
 install_traefik_systemd() {
-  if [[ "$MODE" != "edge" && "$MODE" != "local" ]]; then return 0; fi
+  if [[ "$MODE" != "master" && "$MODE" != "local" ]]; then return 0; fi
   hr; log "Installing Traefik reverse proxy…"
   cat >/etc/traefik/traefik.yml <<EOF
 api:

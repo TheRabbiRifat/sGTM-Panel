@@ -6,7 +6,7 @@
 # ─────────────────────────────────────────────
 set -euo pipefail
 
-NODE_ID="${NODE_ID:-edge-local-01}"
+NODE_ID="${NODE_ID:-master-local-01}"
 CONTROL_PLANE_URL="${CONTROL_PLANE_URL:-http://localhost:8080}"
 NODE_API_KEY="${NODE_API_KEY:-dev-node-key}"
 
@@ -16,8 +16,8 @@ docker swarm init --advertise-addr 127.0.0.1 || echo "Already in a swarm"
 echo "▶ Creating overlay network hostaffin_edge…"
 docker network create --driver overlay --attachable hostaffin_edge || true
 
-echo "▶ Labelling this node as edge…"
-docker node update --label-add hostaffin_role=edge "$(hostname)" || true
+echo "▶ Labelling this node as master…"
+docker node update --label-add hostaffin_role=master "$(hostname)" || true
 
 echo "▶ Installing node-agent…"
 install -m 0755 ./node-agent/hostaffin-node-agent /usr/local/bin/hostaffin-node-agent || true

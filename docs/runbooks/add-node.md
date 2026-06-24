@@ -1,8 +1,10 @@
-# Runbook: Add a new edge node
+# Runbook: Add a new master node
 
 ## When
 
-Onboarding a new physical host to the swarm.
+Onboarding a new physical host to the swarm. Every node in the cluster is a
+**master node** — there is no separate "edge" or "slave" role. All nodes can
+serve traffic, run Traefik, and host customer containers.
 
 ## Steps
 
@@ -25,10 +27,10 @@ Onboarding a new physical host to the swarm.
    docker swarm join --token <manager-token> <manager-ip>:2377
    ```
 
-4. **Label the node**
+4. **Label the node** (every node is a master)
 
    ```bash
-   docker node update --label-add hostaffin_role=edge <node-id>
+   docker node update --label-add hostaffin_role=master <node-id>
    ```
 
 5. **Create the overlay network** (only once per cluster, idempotent)
@@ -51,7 +53,8 @@ Onboarding a new physical host to the swarm.
    ssh root@<node-ip> systemctl status hostaffin-node-agent
    ```
 
-   On the control plane admin panel → Nodes → confirm new node is `online`.
+   On the control plane admin panel → Nodes → confirm new node is `online`
+   and its `role` is `master`.
 
 ## Rollback
 
