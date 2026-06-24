@@ -3,13 +3,13 @@
 [![CI — Control Plane](https://img.shields.io/badge/CI-control--plane-blue)](#)
 [![CI — Admin Panel](https://img.shields.io/badge/CI-admin--panel-blue)](#)
 [![CI — WHMCS Module](https://img.shields.io/badge/CI-whmcs--module-blue)](#)
-[![OS](https://img.shields.io/badge/OS-Alma%20Linux%209-important)](#)
+[![OS](https://img.shields.io/badge/OS-YUM%20family-important)](#)
 [![License](https://img.shields.io/badge/license-Proprietary-red)](#)
 
 A WHMCS-native, fully managed **Server-side Google Tag Manager (sGTM)** hosting
 product. Customers buy and manage sGTM containers entirely from WHMCS; the
 platform automates provisioning, lifecycle, SSL, metering, custom loaders,
-cookie extensions, and billing.
+cookie extensions, bot detection, ad-block recovery, and billing.
 
 ```
 ┌──────────┐    ┌────────────────┐    ┌──────────────┐    ┌──────────────────────┐
@@ -31,11 +31,12 @@ cookie extensions, and billing.
 - [Features](#features)
 - [Repository layout](#repository-layout)
 - [Quick start — local dev](#quick-start--local-dev)
-- [Production install — Alma Linux 9](#production-install--alma-linux-9)
+- [Production install — YUM-family distros](#production-install--yum-family-distros)
 - [Uninstall](#uninstall)
 - [Components](#components)
 - [WHMCS module](#whmcs-module)
 - [Custom Loader & Cookie Extension](#custom-loader--cookie-extension)
+- [Admin Move Service](#admin-move-service)
 - [API reference](#api-reference)
 - [Operations](#operations)
 - [Tech stack](#tech-stack)
@@ -49,16 +50,30 @@ cookie extensions, and billing.
 
 - **WHMCS-native provisioning** — purchase, suspend, unsuspend, terminate, and
   change-package flows are all wired to the WHMCS module.
+- **WHMCS client-area self-service** — customers add custom domains, manage
+  custom loaders (alias + FBP/FBC + trigger + DNT), toggle cookie lifetime
+  extensions, view request counts, and restart their container — all without
+  raising a support ticket.
 - **Multi-tenant Docker Swarm** — one container per customer, scheduled across
   master nodes with a `hostaffin_role=master` label.
 - **Traefik v3 reverse proxy** with automatic Let's Encrypt certificates via
   HTTP-01 ACME challenges.
 - **JWT (RS256) auth + Argon2id password hashing** with role-based access
   control (`super_admin`, `admin`, `support`).
-- **Custom Loader** — first-party gated JS snippet with SRI hash and rotation
-  grace period. ([details](#custom-loader--cookie-extension))
+- **Custom Loader** — first-party gated JS snippet with **renameable JS alias**
+  (`gtm.js`, `gtag.js`, `analytics.js`, `trk.js`, `trk-ss.js`, `fbevents.js`,
+  `pixel.js`, `loader.js`, `custom`), **FBP / FBC Facebook-cookie forwarding**,
+  vendor-mapping JSON, and SRI hash. ([details](#custom-loader--cookie-extension))
 - **Cookie Extension** — extend third-party cookie lifetime (clamped to
   Chrome's 395-day cap) with vendor compatibility matrix. ([details](#custom-loader--cookie-extension))
+- **Admin-only Move Service** — transfer a container from one master node to
+  another (WHM-style `Transfer Account`), single or bulk, with safety
+  confirmation. ([details](#admin-move-service))
+- **Bot detection** — UA regex gating baked into the loader plus server-side
+  inspection at `LoaderRun`.
+- **Ad-block recovery** — first-party cookie on customer domain via
+  `cookie_extensions` plus a probe-and-fallback JS path for blocked
+  `gtm.js` requests.
 - **Usage metering** — daily rollups in PostgreSQL, raw events in ClickHouse
   with a `events_raw` → `events_5m` materialized view.
 - **Asynq worker** for background jobs: provisioning, restarts, upgrades,
@@ -94,7 +109,7 @@ sGTM-Panel/
 │   │   ├── redis/
 │   │   ├── repos/        # 9 repos
 │   │   └── services/     # 4 service packages (provisioning, loaders, …)
-│   ├── migrations/       # 4 SQL files + ClickHouse DDL
+│   ├── migrations/       # 5 SQL files + ClickHouse DDL
 │   ├── Dockerfile
 │   └── README.md
 │
@@ -115,8 +130,8 @@ sGTM-Panel/
 │   └── modules/servers/hostaffin_sgtm/
 │       ├── hostaffin_sgtm.php
 │       ├── callback.php                   # HMAC-signed webhook receiver
-│       ├── lib/{ApiClient,Hooks}.php
-│       └── templates/clientarea.tpl
+│       ├── lib/{ApiClient,Hooks}.php      # block-aware template engine
+│       └── templates/clientarea.tpl       # full client-area UI
 │
 ├── traefik/                               # Reverse proxy
 │   ├── traefik.yml
@@ -127,8 +142,11 @@ sGTM-Panel/
 │   ├── ansible/{playbook,roles}/          # docker, traefik, node-agent
 │   ├── systemd/hostaffin-node-agent.service
 │   └── scripts/
-│       ├── install-almalinux9.sh          # production installer
-│       ├── uninstall-almalinux9.sh        # production uninstaller
+│       ├── install-interactive.sh         # ASCII-UI wizard
+│       ├── install-almalinux9.sh          # YUM-family installer
+│       ├── uninstall-almalinux9.sh        # YUM-family uninstaller
+│       ├── lib-ui.sh                      # shared ASCII UI helpers
+│       ├── lib-pm.sh                      # dnf/yum auto-detection
 │       ├── bootstrap-node.sh
 │       ├── rotate-jwt.sh
 │       └── backup.sh
@@ -188,12 +206,27 @@ Default super-admin: **`admin@hostaffin.local` / `ChangeMe!123`**
 
 ---
 
-## Production install — Alma Linux 9
+## Production install — YUM-family distros
 
-The repo ships with a fully-tested, non-interactive installer for fresh Alma
-Linux 9 / Rocky 9 / RHEL 9 hosts. It handles **everything**: packages,
-firewall, SELinux, Docker, Swarm, Traefik, node-agent, control plane,
-PostgreSQL, Redis, ClickHouse, migrations, and seed.
+The repo ships with a fully-tested, non-interactive installer that targets
+**any YUM-family distro** — AlmaLinux / Rocky / RHEL / CentOS Stream /
+Oracle Linux / Fedora / Amazon Linux. Package-manager detection is
+automatic (`dnf` on modern, `yum` on legacy); force a specific one with
+`HOSTAFFIN_PM=dnf|yum` if needed. The installer handles **everything**:
+packages, firewall, SELinux, Docker, Swarm, Traefik, node-agent, control
+plane, PostgreSQL, Redis, ClickHouse, migrations, and seed.
+
+### Supported distros
+
+| Distro                  | Versions                | Package manager          |
+| ----------------------- | ----------------------- | ------------------------ |
+| AlmaLinux               | 8, 9                    | dnf                      |
+| Rocky Linux             | 8, 9                    | dnf                      |
+| RHEL                    | 7, 8, 9                 | yum (7) / dnf (8+)       |
+| CentOS Stream           | 8, 9                    | dnf                      |
+| Oracle Linux            | 7, 8, 9                 | yum (7) / dnf (8+)       |
+| Fedora                  | 36+                     | dnf                      |
+| Amazon Linux            | 2, 2023                 | yum (AL2) / dnf (AL2023) |
 
 ### One-liner (recommended)
 
@@ -274,9 +307,12 @@ sudo ./infra/scripts/install-almalinux9.sh \
 | `--skip-swap-disable`     | keep swap enabled                                          |
 
 All flags also accept `HOSTAFFIN_<UPPER_SNAKE_CASE>` env-var overrides.
+`HOSTAFFIN_PM=dnf|yum` forces a specific package manager (skip the
+auto-detect).
 
 ### What the installer does
 
+- Auto-detects dnf vs yum (via `infra/scripts/lib-pm.sh`)
 - Updates the system and enables EPEL
 - Installs Docker Engine 26.1.3 + Compose plugin
 - Tunes kernel (`/etc/sysctl.d/99-hostaffin.conf`) and ulimits
@@ -354,7 +390,8 @@ Next.js 14 App Router with Shadcn UI. Server-side fetchers rewrite `/api/cp/*`
 to the control plane.
 
 Pages: Dashboard, Services (list + detail with Overview/Loaders/Cookie
-Extensions/Metrics tabs), Nodes, Plans, Users, Audit, Settings, Login.
+Extensions/Metrics tabs), **Services → Move** (admin-only bulk transfer),
+Nodes, Plans, Users, Audit, Settings, Login.
 
 See [`admin-panel/README.md`](./admin-panel/README.md).
 
@@ -374,6 +411,25 @@ The module implements:
 - `AdminCustomButtonArray` (admin actions)
 - HMAC-signed webhook receiver at `callback.php`
 - Auto-created custom fields: `service_id`, `edge_hostname`, `plan_slug`
+- **Client-area self-service UI** for custom domains, custom loaders, cookie
+  lifetime extensions, request counts, and restart
+
+### What customers can do from the client area
+
+| Feature                       | What they can do                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| Service status + plan         | View status, plan, container URL                                                                  |
+| Usage / request count         | Monthly request count, loader hits, cookie-ext hits, bandwidth                                    |
+| Custom domain                 | Add → receive CNAME / TXT instructions → re-verify DNS → ACME cert issued                        |
+| Custom loader                 | Pick JS alias (`gtm.js`, `gtag.js`, `trk.js`, `trk-ss.js`, `analytics.js`, `fbevents.js`, `pixel.js`, `loader.js`, `custom`), set trigger (immediate / delay / consent cookie / on element), map `_fbp` / `_fbc` Facebook cookies, honor DNT, pause / resume, rotate |
+| Cookie lifetime extension     | Add (cookie name + vendor URL + lifetime ≤ 395 days), pause / resume, delete                      |
+| Restart container             | One-click restart                                                                                 |
+
+The client-area UI is rendered by a **custom block-aware template engine**
+in `lib/Hooks.php` that supports `{{if}}` / `{{range}}` (nested),
+`{{.field}}`, pipes (`|default:X`, `|raw`, `|upper`, `|lower`), and
+`{{partial name}}`. Every state-changing form is protected by the standard
+WHMCS CSRF token.
 
 Set the **API URL** and **API Key** in the WHMCS module config (they must
 match the control plane's `CONTROL_PLANE_URL` and a server token).
@@ -391,12 +447,20 @@ A first-party, gated JavaScript snippet served from the customer's own edge
 hostname.
 
 - **Loader ID format:** `lk_xxxxxxxx` (8 bytes hex, e.g. `lk_3f9a2c1b`)
+- **JS file alias:** `gtm.js`, `gtag.js`, `analytics.js`, `trk.js`,
+  `trk-ss.js`, `fbevents.js`, `pixel.js`, `loader.js`, or `custom` —
+  the served URL is renamed to evade ad-blockers and basic blocklists.
+- **FBP / FBC forwarding:** the loader reads `_fbp` / `_fbc` cookies
+  from the page and forwards them into the `/loader.js/run` URL so the
+  server can dedupe and report on Facebook-click attribution.
 - **Gating modes:** `immediate`, `consent`, `delay`, `element`
 - **SRI hash** computed server-side; snippet copy includes the correct
   `<script integrity=…>` tag
 - **Rotation grace period:** previous loader keeps serving for 24h after
   regeneration; both `lk_…` IDs valid in parallel
 - **Per-service rate limit:** 60 req/min per IP (Redis token bucket)
+- **Bot detection:** UA regex (`/bot|crawl|spider/i`) gate is baked into
+  the rendered JS, configurable per-loader via `allow_bots`.
 
 ### Cookie Extension
 
@@ -409,8 +473,50 @@ Extend the lifetime of third-party cookies set by vendor tags.
 - **Logs:** IP-hashed (HMAC-SHA256), no raw IPs ever written
 - **Purge job:** runs daily, removes `cookie_extension_logs` older than 90 days
 - **Per-vendor rate limit:** 30 req/min per IP
+- **Ad-block recovery:** because the cookie is set on the customer's own
+  first-party domain, ad-blockers see it as legitimate and allow it
+  through, recovering most third-party-cookie breakage caused by ITP.
 
 See the full plan in [§15A & §15B of `HOSTAFFIN_SGTM_PLATFORM_PLAN.md`](./HOSTAFFIN_SGTM_PLATFORM_PLAN.md).
+
+---
+
+## Admin Move Service
+
+WHM-style **Transfer Account** tool for operators — relocate an sGTM
+container from one master node to another. Admin-only.
+
+### Single-service move
+
+On any `/services/:id` page, click **Move to another node**:
+
+1. The dialog shows the service's current node (with CPU / RAM / container count).
+2. Pick an online master node from the candidate list.
+3. (Recommended) click **Drain** on the destination node first so no new
+   containers land on it during the transfer.
+4. Type the service's edge hostname to confirm — typo-proof safety check
+   borrowed from WHM.
+5. The container is re-pulled on the destination, redeployed with the same
+   plan / loader / cookie / domain settings, and `services.node_id` is
+   updated. Traefik re-discovers the route via Docker labels (no DNS change).
+
+Tracking on the service pauses for ~30–90 s during the move.
+
+### Bulk move
+
+`/services/move` lets you relocate every active service currently on a
+*different* node in one go. The page issues one `POST /api/services/:id/move`
+per affected service in parallel and reports per-service success / failure
+in a collapsible details block.
+
+### API
+
+| Verb   | Path                          | Purpose                                    |
+| ------ | ----------------------------- | ------------------------------------------ |
+| `POST` | `/api/services/:id/move`      | Move a single service to another master    |
+| `POST` | `/api/nodes/:id/drain`        | Stop new containers landing on a master    |
+
+Full admin-panel documentation lives in [`admin-panel/README.md`](./admin-panel/README.md#move-service-admin-only).
 
 ---
 
@@ -426,12 +532,22 @@ See [`docs/api.md`](./docs/api.md) for the full REST surface. Highlights:
 | POST   | `/api/v1/services/:id/restart`      | admin  | restart container                 |
 | POST   | `/api/v1/services/:id/suspend`      | admin  | suspend                           |
 | POST   | `/api/v1/services/:id/unsuspend`    | admin  | unsuspend                         |
+| POST   | `/api/v1/services/:id/terminate`    | admin  | terminate                         |
+| POST   | `/api/v1/services/:id/move`         | admin  | move container to another master  |
 | POST   | `/api/v1/services/:id/loaders`      | admin  | create custom loader              |
+| PATCH  | `/api/v1/services/:id/loaders/:lid` | admin  | update loader config (alias, FBP/FBC, trigger, DNT, …) |
 | POST   | `/api/v1/services/:id/loaders/:lid/regenerate` | admin | rotate loader ID     |
+| POST   | `/api/v1/services/:id/loaders/:lid/enable`   | admin | resume loader       |
+| POST   | `/api/v1/services/:id/loaders/:lid/disable`  | admin | pause loader        |
 | POST   | `/api/v1/services/:id/cookie-extensions`     | admin | add cookie extension    |
-| POST   | `/api/v1/services/:id/cookie-extensions/:name/test` | admin | synthetic test     |
+| PATCH  | `/api/v1/cookie-extensions/:id`     | admin  | toggle / update extension         |
+| DELETE | `/api/v1/cookie-extensions/:id`     | admin  | remove extension                  |
+| POST   | `/api/v1/services/:id/domains`      | admin  | add custom domain                 |
+| POST   | `/api/v1/domains/:id/verify`        | admin  | re-check DNS                      |
+| DELETE | `/api/v1/domains/:id`               | admin  | remove custom domain              |
+| POST   | `/api/v1/nodes/:id/drain`           | admin  | stop new containers landing       |
 | GET    | `/loader.js?lid=…`                  | public | serve gated loader                |
-| GET    | `/loader.js/run?lid=…`              | public | tracking pixel                    |
+| GET    | `/loader.js/run?lid=…`              | public | tracking pixel + bot inspection   |
 | GET    | `/cookie/extend/:name?v=…&t=…&rt=…` | public | set the extended cookie           |
 | POST   | `/webhooks/whmcs`                   | HMAC   | WHMCS event receiver              |
 | GET    | `/healthz`                          | —      | liveness                          |
@@ -464,7 +580,8 @@ See [`docs/api.md`](./docs/api.md) for the full REST surface. Highlights:
 | WHMCS integration  | PHP 8.1+ (cURL + HMAC-SHA256)                          |
 | Orchestration      | Docker Swarm                                           |
 | Reverse proxy      | Traefik v3 (Let's Encrypt ACME HTTP-01)                |
-| Provisioning       | Custom bash installer (Alma Linux 9) + Ansible roles  |
+| Provisioning       | Custom bash installer (any YUM-family distro) + Ansible roles  |
+| Supported OS       | AlmaLinux 8/9, Rocky 8/9, RHEL 7/8/9, CentOS Stream, Oracle, Fedora, Amazon Linux |
 | CI                 | GitHub Actions (Go test+build, Next.js build, PHP linter) |
 
 ---
