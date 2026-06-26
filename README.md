@@ -142,6 +142,7 @@ sGTM-Panel/
 │   ├── ansible/{playbook,roles}/          # docker, traefik, node-agent
 │   ├── systemd/hostaffin-node-agent.service
 │   └── scripts/
+│       ├── one-liner-install.sh           # token-safe one-shot wrapper (recommended)
 │       ├── install-interactive.sh         # ASCII-UI wizard
 │       ├── install-yum.sh                 # YUM-family installer
 │       ├── uninstall-yum.sh               # YUM-family uninstaller
@@ -230,13 +231,66 @@ plane, PostgreSQL, Redis, ClickHouse, migrations, and seed.
 
 ### One-liner (recommended)
 
+The recommended install uses a token-safe wrapper
+([`one-liner-install.sh`](./infra/scripts/one-liner-install.sh)) that
+downloads the installer + shared libs to a private temp dir, verifies
+their SHA-256 against an embedded manifest, runs the installer with
+your secrets loaded from a `0600` env-file, and `shred`s the temp dir
+on exit.
+
+> **Why not `curl … | sudo bash`?** Tokens passed on the command line
+> show up in `ps` / `/proc/<pid>/cmdline` and shell history. The wrapper
+> refuses to run without `--env-file`, and only `HOSTAFFIN_*` variables
+> from that file are allowed through.
+
+#### 1. Stage secrets (mode `0600`, owner `root`)
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/install-yum.sh \
-  | sudo bash -s -- --mode local --non-interactive
+sudo install -m 0600 /dev/null /etc/hostaffin/install.env
+sudo vi /etc/hostaffin/install.env
 ```
 
-This installs the **local all-in-one** profile (single host, single swarm
-manager) — perfect for production start or for setting up a staging env.
+```ini
+# /etc/hostaffin/install.env
+HOSTAFFIN_MODE=local
+# HOSTAFFIN_JOIN_TOKEN=SWMTKN-1-...
+# HOSTAFFIN_MANAGER_ADDR=10.0.0.5:2377
+# HOSTAFFIN_CONTROL_PLANE_URL=https://cp.example.com
+# HOSTAFFIN_NODE_ID=master-fra-01
+# HOSTAFFIN_NODE_API_KEY=replace-me
+HOSTAFFIN_GITHUB_TOKEN=ghp_replace_me
+```
+
+The wrapper only passes `HOSTAFFIN_[A-Z0-9_]+` variables through, so
+typos or stray exports won't leak into the installer.
+
+#### 2. Run the wrapper
+
+```bash
+sudo bash -c '
+  tmp=$(mktemp -d) &&
+  curl -fsSL --proto =https \
+    https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/one-liner-install.sh \
+    -o "$tmp/wrap" &&
+  bash "$tmp/wrap" --env-file /etc/hostaffin/install.env --yes &&
+  rm -rf "$tmp"
+'
+```
+
+This installs the **local all-in-one** profile (single host, single
+swarm manager) — perfect for a production start or a staging env.
+
+#### Alternative: pipe the wrapper into bash directly
+
+If you really want a single line, you can pipe the wrapper itself into
+bash (it is small and does not need tokens to run — only the child
+installer does):
+
+```bash
+curl -fsSL --proto =https \
+  https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/one-liner-install.sh \
+  | sudo bash -s -- --env-file /etc/hostaffin/install.env --yes
+```
 
 ### Interactive wizard (recommended for first-time installs)
 
@@ -274,23 +328,90 @@ unattended with `--config answers.env --non-interactive`.
 
 ### Provision a fleet
 
-```bash
-# 1. On the FIRST host (becomes the Swarm manager + control plane)
-sudo ./infra/scripts/install-yum.sh \
-  --mode local --non-interactive
-# → saves join token + manager IP; copy them.
+**First host (becomes Swarm manager + control plane):**
 
-# 2. On each additional master node
-sudo ./infra/scripts/install-yum.sh \
-  --mode master \
-  --join-token <WORKER-TOKEN> \
-  --manager-addr <MANAGER-IP>:2377 \
-  --non-interactive
+```bash
+# Secrets file just needs HOSTAFFIN_MODE + HOSTAFFIN_GITHUB_TOKEN
+echo 'HOSTAFFIN_MODE=local'        | sudo tee /etc/hostaffin/install.env
+echo 'HOSTAFFIN_GITHUB_TOKEN=ghp…'  | sudo tee -a /etc/hostaffin/install.env
+sudo chmod 0600 /etc/hostaffin/install.env
+
+sudo bash -c '
+  tmp=$(mktemp -d) &&
+  curl -fsSL --proto =https \
+    https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/one-liner-install.sh \
+    -o "$tmp/wrap" &&
+  bash "$tmp/wrap" --env-file /etc/hostaffin/install.env --yes
+'
+# → saves join token + manager IP; copy them.
+```
+
+**Each additional master node:**
+
+```bash
+sudo tee /etc/hostaffin/install.env >/dev/null <<'EOF'
+HOSTAFFIN_MODE=master
+HOSTAFFIN_JOIN_TOKEN=SWMTKN-1-...
+HOSTAFFIN_MANAGER_ADDR=10.0.0.5:2377
+HOSTAFFIN_CONTROL_PLANE_URL=https://cp.example.com
+HOSTAFFIN_NODE_ID=master-fra-02
+HOSTAFFIN_NODE_API_KEY=replace-me
+HOSTAFFIN_GITHUB_TOKEN=ghp_...
+EOF
+sudo chmod 0600 /etc/hostaffin/install.env
+
+sudo bash -c '
+  tmp=$(mktemp -d) &&
+  curl -fsSL --proto =https \
+    https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/one-liner-install.sh \
+    -o "$tmp/wrap" &&
+  bash "$tmp/wrap" --env-file /etc/hostaffin/install.env --yes
+'
 ```
 
 > There is no separate `--mode worker` anymore — every node is a master.
 
-### Useful flags
+### Calling the installer directly (no wrapper)
+
+If you've already cloned the repo and don't need the wrapper, you can
+call the canonical installer directly. **Never put tokens on the
+command line** — export them from the same env-file instead:
+
+```bash
+# Load secrets into the current shell, then run the installer.
+set -a; source /etc/hostaffin/install.env; set +a
+sudo -E ./infra/scripts/install-yum.sh --mode local --non-interactive
+```
+
+The installer's `BASH_SOURCE[0]` resolves correctly here because the
+script is on disk (not piped via stdin), so the `lib-pm.sh` /
+`lib-ui.sh` sources work without any fallback.
+
+### Wrapper flags
+
+| Flag                     | Description                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `--env-file PATH`        | path to a `0600` env-file containing `HOSTAFFIN_*` variables (required)            |
+| `--repo-base URL`        | override the GitHub raw URL (default: `main` of `TheRabbiRifat/sGTM-Panel`)       |
+| `-y`, `--yes`, `--assume-yes` | pass `--non-interactive` through to the installer                           |
+
+### Wrapper guarantees
+
+- **Tokens never touch the command line.** The wrapper refuses to run
+  unless `--env-file` points at a file whose mode is `0400` or `0600`.
+  Only `HOSTAFFIN_[A-Z0-9_]+` variables from that file are passed
+  through — anything else aborts.
+- **Tokens are exported `readonly`** to the child installer process and
+  `unset` from the wrapper's environment after the child exits.
+- **Checksum verification.** Every fetched script
+  (`install-yum.sh`, `lib-pm.sh`, `lib-ui.sh`) is verified against an
+  embedded SHA-256 manifest before execution. The pins are
+  auto-bumped by the [`installer-pins`](./.github/workflows/ci-installer-pins.yml)
+  CI workflow whenever any of those scripts change on `main`.
+- **No leftovers.** The wrapper's working dir (`mktemp -d`, mode `0700`)
+  is wiped with `shred -u` + `rm -rf` on `EXIT` / `INT` / `TERM`.
+
+### Useful installer flags
 
 | Flag                      | Description                                                |
 | ------------------------- | ---------------------------------------------------------- |
@@ -333,7 +454,8 @@ auto-detect).
 - Performs **health checks** and prints a final summary
 
 See [`infra/scripts/install-yum.sh`](./infra/scripts/install-yum.sh)
-for full reference. The script is **shellcheck-clean** (`shellcheck --shell=bash` → exit 0).
+for full reference (the wrapper just downloads and runs it). Both
+scripts are **shellcheck-clean** (`shellcheck --shell=bash` → exit 0).
 
 ---
 

@@ -13,6 +13,7 @@ infra/
 ├── systemd/
 │   └── hostaffin-node-agent.service
 └── scripts/
+    ├── one-liner-install.sh       # token-safe one-shot wrapper (recommended entry-point)
     ├── install-interactive.sh     # ASCII-UI wizard (timezone, DNS, mode, …)
     ├── install-yum.sh             # YUM-family installer (the canonical one)
     ├── uninstall-yum.sh           # YUM-family uninstaller
@@ -69,9 +70,42 @@ auto-detect ever picks the wrong one (rare; mostly useful in chroots).
 # Interactive wizard (recommended) — ASCII UI, prompts for everything
 sudo ./infra/scripts/install-interactive.sh
 
-# Direct, non-interactive
-sudo ./infra/scripts/install-yum.sh \
+# Direct, non-interactive — load secrets from a 0600 env-file, never
+# pass tokens on the command line.
+sudo set -a; source /etc/hostaffin/install.env; set +a
+sudo -E ./infra/scripts/install-yum.sh \
   --mode local \
   --control-plane-url http://localhost:8080 \
   --non-interactive
 ```
+
+### Token-safe one-liner
+
+The `one-liner-install.sh` wrapper handles download, checksum
+verification, env-file loading, and cleanup for you. Tokens live in
+`/etc/hostaffin/install.env` (mode `0600`) — they never appear in
+`ps`, `/proc/<pid>/cmdline`, or shell history.
+
+```bash
+# 1. Stage secrets (once per host)
+sudo install -m 0600 /dev/null /etc/hostaffin/install.env
+sudo vi /etc/hostaffin/install.env
+#   HOSTAFFIN_MODE=local
+#   HOSTAFFIN_GITHUB_TOKEN=ghp_...
+
+# 2. Run the wrapper
+sudo bash -c '
+  tmp=$(mktemp -d) &&
+  curl -fsSL --proto =https \
+    https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/one-liner-install.sh \
+    -o "$tmp/wrap" &&
+  bash "$tmp/wrap" --env-file /etc/hostaffin/install.env --yes
+'
+```
+
+The wrapper refuses to run without `--env-file`, refuses any
+`HOSTAFFIN_*` env-file whose mode isn't `0400` or `0600`, refuses any
+variable that isn't `HOSTAFFIN_[A-Z0-9_]+`, and verifies the SHA-256
+of every fetched script against an embedded manifest before executing.
+See the [top-level README](../README.md#one-liner-recommended) for
+the full set of wrapper flags and guarantees.
