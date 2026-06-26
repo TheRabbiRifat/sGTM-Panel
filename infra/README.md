@@ -13,12 +13,7 @@ infra/
 ├── systemd/
 │   └── hostaffin-node-agent.service
 └── scripts/
-    ├── one-liner-install.sh       # token-safe one-shot wrapper (recommended entry-point)
-    ├── install-interactive.sh     # ASCII-UI wizard (timezone, DNS, mode, …)
-    ├── install-yum.sh             # YUM-family installer (the canonical one)
-    ├── uninstall-yum.sh           # YUM-family uninstaller
-    ├── lib-ui.sh                  # shared ASCII UI helpers
-    ├── lib-pm.sh                  # dnf/yum auto-detection helpers
+    ├── installer.sh               # unified installer: install | uninstall | interactive | health-check
     ├── bootstrap-node.sh          # quick local dev bootstrap
     ├── rotate-jwt.sh              # rotate JWT keypair
     └── backup.sh                  # nightly Postgres → S3 backup
@@ -45,11 +40,11 @@ network, and starts the node-agent under systemd.
 
 ## Supported operating systems
 
-Both `install-interactive.sh` and `install-yum.sh` accept **any
-YUM-family distro** and auto-detect whether to use `dnf` (modern) or
-`yum` (legacy). The shared helper `lib-pm.sh` provides `pm_install`,
-`pm_remove`, `pm_addrepo`, and `pm_repo_install` so the rest of the
-scripts do not need to know which binary is present.
+`installer.sh` accepts **any YUM-family distro** and auto-detects
+whether to use `dnf` (modern) or `yum` (legacy). Internal helpers
+provide `pm_install`, `pm_remove`, `pm_addrepo`, and `pm_repo_install`
+so the rest of the script does not need to know which binary is
+present.
 
 | Distro                  | Versions         | Package manager |
 | ----------------------- | ---------------- | --------------- |
@@ -66,25 +61,45 @@ auto-detect ever picks the wrong one (rare; mostly useful in chroots).
 
 ### Quick install
 
+`installer.sh` has four subcommands:
+
+| Subcommand      | Purpose                                                     |
+| --------------- | ----------------------------------------------------------- |
+| `install`       | non-interactive install (default mode)                      |
+| `uninstall`     | reverse the install; `--purge` removes data + config too    |
+| `interactive`   | full-screen ASCII wizard for first-time installs            |
+| `health-check`  | verify that the install is healthy and reachable            |
+| `help`          | show all flags, env-vars, and examples                      |
+
 ```bash
-# Interactive wizard (recommended) — ASCII UI, prompts for everything
-sudo ./infra/scripts/install-interactive.sh
+# Interactive wizard (recommended for first-time installs)
+sudo ./infra/scripts/installer.sh interactive
 
 # Direct, non-interactive — load secrets from a 0600 env-file, never
 # pass tokens on the command line.
 sudo set -a; source /etc/hostaffin/install.env; set +a
-sudo -E ./infra/scripts/install-yum.sh \
+sudo -E ./infra/scripts/installer.sh install \
   --mode local \
   --control-plane-url http://localhost:8080 \
   --non-interactive
+
+# Uninstall (stops services + removes containers, keeps data)
+sudo ./infra/scripts/installer.sh uninstall --mode local
+
+# Full purge (irreversible — type DELETE to confirm)
+sudo ./infra/scripts/installer.sh uninstall --mode local --purge
+
+# Health check
+sudo ./infra/scripts/installer.sh health-check
 ```
 
 ### Token-safe one-liner
 
-The `one-liner-install.sh` wrapper handles download, checksum
-verification, env-file loading, and cleanup for you. Tokens live in
+The installer is token-safe by design. Tokens live in
 `/etc/hostaffin/install.env` (mode `0600`) — they never appear in
-`ps`, `/proc/<pid>/cmdline`, or shell history.
+`ps`, `/proc/<pid>/cmdline`, or shell history. You can run the
+installer straight from GitHub via stdin (the script self-bootstraps
+to disk if `BASH_SOURCE[0]` is empty under `set -u`):
 
 ```bash
 # 1. Stage secrets (once per host)
@@ -93,19 +108,18 @@ sudo vi /etc/hostaffin/install.env
 #   HOSTAFFIN_MODE=local
 #   HOSTAFFIN_GITHUB_TOKEN=ghp_...
 
-# 2. Run the wrapper
+# 2. Pipe the installer straight from GitHub
 sudo bash -c '
-  tmp=$(mktemp -d) &&
   curl -fsSL --proto =https \
-    https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/one-liner-install.sh \
-    -o "$tmp/wrap" &&
-  bash "$tmp/wrap" --env-file /etc/hostaffin/install.env --yes
+    https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/installer.sh \
+    | env $(grep -h "^HOSTAFFIN_" /etc/hostaffin/install.env | xargs) bash -s -- install --non-interactive
 '
 ```
 
-The wrapper refuses to run without `--env-file`, refuses any
-`HOSTAFFIN_*` env-file whose mode isn't `0400` or `0600`, refuses any
-variable that isn't `HOSTAFFIN_[A-Z0-9_]+`, and verifies the SHA-256
-of every fetched script against an embedded manifest before executing.
-See the [top-level README](../README.md#one-liner-recommended) for
-the full set of wrapper flags and guarantees.
+For maximum safety, pin the installer to a known SHA-256 with
+`--sha256 <hex>` (optional; the installer still aborts on download
+error even without a pin).
+
+See the [top-level README](../README.md#production-install--yum-family-distros)
+for the full set of installer flags, env-vars, and the list of what
+the installer does step-by-step.

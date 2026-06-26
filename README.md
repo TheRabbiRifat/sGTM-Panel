@@ -142,15 +142,10 @@ sGTM-Panel/
 │   ├── ansible/{playbook,roles}/          # docker, traefik, node-agent
 │   ├── systemd/hostaffin-node-agent.service
 │   └── scripts/
-│       ├── one-liner-install.sh           # token-safe one-shot wrapper (recommended)
-│       ├── install-interactive.sh         # ASCII-UI wizard
-│       ├── install-yum.sh                 # YUM-family installer
-│       ├── uninstall-yum.sh               # YUM-family uninstaller
-│       ├── lib-ui.sh                      # shared ASCII UI helpers
-│       ├── lib-pm.sh                      # dnf/yum auto-detection
-│       ├── bootstrap-node.sh
-│       ├── rotate-jwt.sh
-│       └── backup.sh
+│       ├── installer.sh                   # one unified installer (install / uninstall / interactive / health-check)
+│       ├── bootstrap-node.sh              # quick local dev bootstrap
+│       ├── rotate-jwt.sh                  # rotate JWT keypair
+│       └── backup.sh                      # nightly Postgres → S3 backup
 │
 ├── docs/
 │   ├── api.md                             # REST API reference
