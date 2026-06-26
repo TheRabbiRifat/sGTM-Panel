@@ -49,8 +49,13 @@ pm_detect() {
   export PM_GLOBAL
 }
 
-# Auto-detect on source so callers can just use $PM_GLOBAL directly.
-pm_detect || true
+# Auto-detect on source so callers can use $PM_GLOBAL directly.
+# If detection fails here (e.g. unusual minimal container), the wrapper
+# functions below will re-run pm_detect and produce a clear error message,
+# so we don't suppress failures silently any more.
+if ! pm_detect; then
+  PM_GLOBAL=""
+fi
 
 # ──────────────────────────── Wrappers ───────────────────────────────────
 pm_install() {
@@ -86,7 +91,8 @@ pm_addrepo() {
       if command -v yum-config-manager >/dev/null 2>&1; then
         yum-config-manager --add-repo "$url"
       else
-        local fname="/etc/yum.repos.d/$(basename "${url%%\?*}")"
+        local fname
+        fname="/etc/yum.repos.d/$(basename "${url%%\?*}")"
         curl -fsSL "$url" -o "$fname"
       fi
       ;;
@@ -111,7 +117,8 @@ pm_repo_install() {
       if command -v yum-config-manager >/dev/null 2>&1; then
         yum-config-manager --add-repo "$repo_url" >/dev/null
       else
-        local fname="/etc/yum.repos.d/$(basename "${repo_url%%\?*}")"
+        local fname
+        fname="/etc/yum.repos.d/$(basename "${repo_url%%\?*}")"
         curl -fsSL "$repo_url" -o "$fname"
       fi
       yum -y install "$@"

@@ -2,7 +2,7 @@
 # ───────────────────────────────────────────────────────────────────────
 # Hostaffin sGTM Hosting Platform — Uninstaller for YUM-family distros
 # ───────────────────────────────────────────────────────────────────────
-# Reverses everything installed by install-almalinux9.sh:
+# Reverses everything installed by install-yum.sh:
 #
 #   ✓ Stops + disables hostaffin-{node-agent,traefik} systemd units
 #   ✓ Tears down the docker-compose stack (postgres, redis, clickhouse,
@@ -15,11 +15,10 @@
 #   ✓ Optionally removes sysctl / limits / firewalld rules
 #   ✓ Optionally removes the hostaffin SELinux module
 #
-# Modes:
-#   --mode local       Undo a local-mode install  (default)
-#   --mode edge        Undo an edge-mode install
-#   --mode worker      Undo a worker-mode install
-#   --mode controlplane  Undo a controlplane-mode install
+# Modes (must match the install mode used):
+#   --mode local          Undo a local-mode install       (default)
+#   --mode master         Undo a master-mode install
+#   --mode controlplane   Undo a controlplane-mode install
 #
 # Flags:
 #   --purge            Also remove /opt/hostaffin, /etc/hostaffin,
@@ -35,10 +34,10 @@
 #   --yes              Alias for --non-interactive
 #
 # Usage:
-#   sudo ./uninstall-almalinux9.sh [--mode MODE] [--purge] [--non-interactive]
-#                                   [--keep-firewall] [--keep-sysctl]
-#                                   [--keep-ulimits] [--keep-docker]
-#                                   [--leave-swarm]
+#   sudo ./uninstall-yum.sh [--mode MODE] [--purge] [--non-interactive]
+#                            [--keep-firewall] [--keep-sysctl]
+#                            [--keep-ulimits] [--keep-docker]
+#                            [--leave-swarm]
 #
 # Environment overrides:
 #   HOSTAFFIN_MODE, HOSTAFFIN_PURGE, HOSTAFFIN_LEAVE_SWARM
@@ -56,6 +55,19 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Handle --help before sourcing lib-pm.sh, so docs read on a non-RPM host
+# still work.
+for _arg in "$@"; do
+  if [[ "$_arg" == "-h" || "$_arg" == "--help" ]]; then
+    awk '
+      /^# ─/{ i++; next }
+      i==2 { sub(/^# ?/, ""); print }
+      i>=3 { exit }
+    ' "$0"
+    exit 0
+  fi
+done
+
 # Use the same package-manager detection as the installer so removal works
 # on either dnf (RHEL 8+, Fedora, Alma, Rocky, CentOS Stream, OL 8+, AL2023)
 # or yum (RHEL 7, CentOS 7, Amazon Linux 2).
@@ -63,6 +75,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib-pm.sh"
 pm_detect || true
+
+# Color codes used by print_summary (declared here so they're always in scope).
+BOLD='\033[1m'; GREEN='\033[1;32m'; RESET='\033[0m'
 
 # ───────────────────────────── Defaults ─────────────────────────────────
 MODE="${HOSTAFFIN_MODE:-local}"
@@ -88,10 +103,6 @@ err()  { printf '\033[1;31m[ err  ]\033[0m %s\n' "$*" >&2; }
 hr()   { printf '\n\033[1;36m%s\033[0m\n' "──────────────────────────────────────────────────────────────" >&2; }
 
 # ─────────────────────────── Argument parsing ───────────────────────────
-print_help() {
-  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)             MODE="$2"; shift 2 ;;
@@ -102,10 +113,16 @@ while [[ $# -gt 0 ]]; do
     --keep-ulimits)     KEEP_ULIMITS=true; shift ;;
     --keep-docker)      KEEP_DOCKER=true; shift ;;
     --non-interactive|--yes) NON_INTERACTIVE=true; shift ;;
-    -h|--help)          print_help; exit 0 ;;
+    -h|--help)          exit 0 ;;  # handled before script body
     *) err "Unknown argument: $1"; exit 2 ;;
   esac
 done
+
+# Validate mode up-front so we can fail fast on typos.
+case "$MODE" in
+  local|master|controlplane) ;;
+  *) err "Invalid --mode '$MODE'. Must be one of: local, master, controlplane."; exit 2 ;;
+esac
 
 # ─────────────────────── Initialise logging sink ───────────────────────
 # Done after arg parsing so --help prints to the terminal cleanly.
@@ -264,11 +281,12 @@ remove_node_label() {
   if ! docker info 2>/dev/null | grep -q "Swarm: active"; then
     return 0
   fi
-  hr; log "Removing hostaffin_role=edge label…"
+  hr; log "Removing hostaffin_role=master label…"
   local self
-  self=$(docker node ls --format '{{.Self}}' 2>/dev/null | head -n1 || true)
+  self=$(docker node ls --format '{{.Self}} {{.ID}}' 2>/dev/null \
+         | awk '$1=="true"{print $2; exit}')
   if [[ -n "$self" ]]; then
-    run_soft docker node update --label-rm hostaffin_role=edge "$self"
+    run_soft docker node update --label-rm hostaffin_role=master "$self"
   fi
   ok "Node label removed"
 }
@@ -296,7 +314,8 @@ handle_swarm_membership() {
   fi
   hr; log "Handling Swarm membership…"
   local self
-  self=$(docker node ls --format '{{.Self}}' 2>/dev/null | head -n1 || true)
+  self=$(docker node ls --format '{{.Self}} {{.ID}}' 2>/dev/null \
+         | awk '$1=="true"{print $2; exit}')
   if [[ -n "$self" ]]; then
     log "  · Draining self…"
     run_soft docker node update --availability drain "$self"
@@ -472,8 +491,6 @@ EOF
 
 # ──────────────────────────── Main flow ─────────────────────────────────
 require_root
-
-BOLD='\033[1m'; GREEN='\033[1;32m'; RESET='\033[0m'
 
 log "Hostaffin sGTM Platform uninstaller"
 log "Mode: $MODE"

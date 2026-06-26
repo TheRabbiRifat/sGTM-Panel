@@ -143,8 +143,8 @@ sGTM-Panel/
 │   ├── systemd/hostaffin-node-agent.service
 │   └── scripts/
 │       ├── install-interactive.sh         # ASCII-UI wizard
-│       ├── install-almalinux9.sh          # YUM-family installer
-│       ├── uninstall-almalinux9.sh        # YUM-family uninstaller
+│       ├── install-yum.sh                 # YUM-family installer
+│       ├── uninstall-yum.sh               # YUM-family uninstaller
 │       ├── lib-ui.sh                      # shared ASCII UI helpers
 │       ├── lib-pm.sh                      # dnf/yum auto-detection
 │       ├── bootstrap-node.sh
@@ -231,7 +231,7 @@ plane, PostgreSQL, Redis, ClickHouse, migrations, and seed.
 ### One-liner (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/install-almalinux9.sh \
+curl -fsSL https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts/install-yum.sh \
   | sudo bash -s -- --mode local --non-interactive
 ```
 
@@ -276,12 +276,12 @@ unattended with `--config answers.env --non-interactive`.
 
 ```bash
 # 1. On the FIRST host (becomes the Swarm manager + control plane)
-sudo ./infra/scripts/install-almalinux9.sh \
+sudo ./infra/scripts/install-yum.sh \
   --mode local --non-interactive
 # → saves join token + manager IP; copy them.
 
 # 2. On each additional master node
-sudo ./infra/scripts/install-almalinux9.sh \
+sudo ./infra/scripts/install-yum.sh \
   --mode master \
   --join-token <WORKER-TOKEN> \
   --manager-addr <MANAGER-IP>:2377 \
@@ -332,7 +332,7 @@ auto-detect).
 - Runs **migrations** + **seed** (3 plans + super admin)
 - Performs **health checks** and prints a final summary
 
-See [`infra/scripts/install-almalinux9.sh`](./infra/scripts/install-almalinux9.sh)
+See [`infra/scripts/install-yum.sh`](./infra/scripts/install-yum.sh)
 for full reference. The script is **shellcheck-clean** (`shellcheck --shell=bash` → exit 0).
 
 ---
@@ -346,13 +346,13 @@ password file, ACME data, and log directories.
 
 ```bash
 # Stop services + remove containers, keep data
-sudo ./infra/scripts/uninstall-almalinux9.sh --mode local
+sudo ./infra/scripts/uninstall-yum.sh --mode local
 
 # Full purge (irreversible)
-sudo ./infra/scripts/uninstall-almalinux9.sh --mode local --purge
+sudo ./infra/scripts/uninstall-yum.sh --mode local --purge
 
 # Dry-ish: stop everything but stay in the swarm and keep Docker
-sudo ./infra/scripts/uninstall-almalinux9.sh \
+sudo ./infra/scripts/uninstall-yum.sh \
   --mode local --purge --leave-swarm --keep-docker --non-interactive
 ```
 

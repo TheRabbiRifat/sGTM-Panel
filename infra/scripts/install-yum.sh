@@ -22,12 +22,12 @@
 #   ✓ Health checks
 #
 # Modes:
-#   --mode local       Single-host all-in-one (default for dev)
-#   --mode master      Master node only (Traefik + node-agent, joins swarm)
+#   --mode local          Single-host all-in-one (default for dev)
+#   --mode master         Master node (Traefik + node-agent, joins swarm)
+#   --mode controlplane   Control plane + DB stack only (no Traefik/node-agent)
 #
 # Every node in the cluster is a master node — there is no separate
 # "edge" or "slave" role. Any node can run Traefik and serve customers.
-#   --mode controlplane  Control plane + DB stack only (no Traefik/node-agent)
 #
 # Supported distros (any YUM-based system with dnf or yum):
 #   • AlmaLinux 8 / 9
@@ -39,11 +39,12 @@
 #   • Amazon Linux 2 (yum) and Amazon Linux 2023 (dnf)
 #
 # Usage:
-#   sudo ./install-almalinux9.sh [--mode MODE] [--join-token TOKEN]
-#                                [--manager-addr ADDR] [--control-plane-url URL]
-#                                [--node-id ID] [--node-api-key KEY]
-#                                [--github-token TOKEN] [--non-interactive]
-#                                [--skip-firewall] [--skip-swap-disable]
+#   sudo ./install-yum.sh [--mode MODE] [--join-token TOKEN]
+#                         [--manager-addr ADDR] [--control-plane-url URL]
+#                         [--node-id ID] [--node-api-key KEY]
+#                         [--github-token TOKEN] [--non-interactive]
+#                         [--skip-firewall] [--skip-swap-disable]
+#                         [--project-dir DIR]
 #
 # Environment overrides (same names, uppercase, with HOSTAFFIN_ prefix):
 #   HOSTAFFIN_MODE, HOSTAFFIN_JOIN_TOKEN, HOSTAFFIN_MANAGER_ADDR,
@@ -62,8 +63,37 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Handle --help BEFORE sourcing lib-pm.sh. We want --help to work even on
+# hosts that don't have dnf or yum installed (e.g. an operator reading
+# the docs on their laptop).
+for _arg in "$@"; do
+  if [[ "$_arg" == "-h" || "$_arg" == "--help" ]]; then
+    awk '
+      /^# ─/{ i++; next }
+      i==2 { sub(/^# ?/, ""); print }
+      i>=3 { exit }
+    ' "$0"
+    exit 0
+  fi
+done
+
 # Pull in the shared package-manager helpers (auto-detects dnf vs yum).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the script's directory even when run via `curl ... | sudo bash -s --`,
+# where BASH_SOURCE[0] is unset because bash is reading the script from stdin.
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd || true)"
+if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/lib-pm.sh" ]]; then
+  # Fallback: pull lib-pm.sh from the same GitHub source we came from.
+  SCRIPT_URL="${HOSTAFFIN_INSTALL_URL:-https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts}"
+  TMP_LIB_DIR="$(mktemp -d)"
+  printf '\033[1;34m[install]\033[0m %s\n' "Downloading lib-pm.sh from $SCRIPT_URL ..." >&2
+  if curl -fsSL "$SCRIPT_URL/lib-pm.sh" -o "$TMP_LIB_DIR/lib-pm.sh"; then
+    SCRIPT_DIR="$TMP_LIB_DIR"
+  else
+    printf '\033[1;31m[err  ]\033[0m %s\n' "cannot locate lib-pm.sh (tried '$SCRIPT_DIR' and $SCRIPT_URL)" >&2
+    exit 1
+  fi
+fi
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib-pm.sh"
 
@@ -81,6 +111,7 @@ SKIP_SWAP=false
 PROJECT_DIR="/opt/hostaffin"
 LOG_DIR="/var/log/hostaffin"
 ENV_FILE="/etc/hostaffin/hostaffin.env"
+ADMIN_PWD_FILE="/root/.hostaffin-admin-password"
 GHCR_IMAGE_BASE="${HOSTAFFIN_GHCR_IMAGE_BASE:-ghcr.io/hostaffin}"
 DOCKER_VERSION="26.1.3"
 GOLANG_VERSION="1.22.5"
@@ -94,10 +125,6 @@ err()  { printf '\033[1;31m[err  ]\033[0m %s\n' "$*" >&2; }
 hr()   { printf '\n\033[1;36m%s\033[0m\n' "──────────────────────────────────────────────────────────────" >&2; }
 
 # ─────────────────────────── Argument parsing ───────────────────────────
-print_help() {
-  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)              MODE="$2"; shift 2 ;;
@@ -111,10 +138,24 @@ while [[ $# -gt 0 ]]; do
     --non-interactive)   NON_INTERACTIVE=true; shift ;;
     --skip-firewall)     SKIP_FIREWALL=true; shift ;;
     --skip-swap-disable) SKIP_SWAP=true; shift ;;
-    -h|--help)           print_help; exit 0 ;;
+    -h|--help)           exit 0 ;;  # handled before script body
     *) err "Unknown argument: $1"; exit 2 ;;
   esac
 done
+
+# Validate mode early so we can fail fast on typos.
+case "$MODE" in
+  local|master|controlplane) ;;
+  *) err "Invalid --mode '$MODE'. Must be one of: local, master, controlplane."; exit 2 ;;
+esac
+
+# Master mode requires the swarm join coordinates up-front.
+if [[ "$MODE" == "master" ]]; then
+  if [[ -z "$JOIN_TOKEN" || -z "$MANAGER_ADDR" ]]; then
+    err "--mode master requires both --join-token and --manager-addr."
+    exit 2
+  fi
+fi
 
 # ─────────────────────── Initialise logging sink ───────────────────────
 # Done after arg parsing so --help prints to the terminal cleanly.
@@ -278,8 +319,8 @@ install_docker() {
     pm_install dnf-plugins-core yum-utils >/dev/null 2>&1 || true
     pm_addrepo https://download.docker.com/linux/centos/docker-ce.repo
     pm_install \
-      docker-ce-${DOCKER_VERSION} \
-      docker-ce-cli-${DOCKER_VERSION} \
+      "docker-ce-${DOCKER_VERSION}" \
+      "docker-ce-cli-${DOCKER_VERSION}" \
       containerd.io \
       docker-buildx-plugin \
       docker-compose-plugin
@@ -305,59 +346,81 @@ ensure_swarm() {
     local|controlplane)
       log "Initialising Swarm (manager)…"
       local advertise
-      advertise=$(hostname -I | awk '{print $1}')
+      advertise=$(hostname -I 2>/dev/null | awk '{print $1}')
       [[ -z "$advertise" ]] && advertise="127.0.0.1"
-      docker swarm init --advertise-addr "$advertise" 2>/dev/null \
-        || docker swarm init --advertise-addr 127.0.0.1
+      if ! docker swarm init --advertise-addr "$advertise" 2>/dev/null; then
+        warn "swarm init with $advertise failed; retrying on 127.0.0.1"
+        docker swarm init --advertise-addr 127.0.0.1
+      fi
       ok "Swarm initialised as manager (advertise $advertise)"
       ;;
     master)
-      if [[ -z "$JOIN_TOKEN" || -z "$MANAGER_ADDR" ]]; then
-        err "master mode requires --join-token and --manager-addr"
-        exit 2
-      fi
+      # Validation already happened up-front; values are guaranteed here.
       log "Joining Swarm at ${MANAGER_ADDR}…"
       docker swarm join --token "$JOIN_TOKEN" "$MANAGER_ADDR" 2377
       ok "Joined swarm"
       ;;
-    *)
-      err "Unknown mode: $MODE"; exit 2 ;;
   esac
 }
 
 label_node_master() {
   # Every node is a master node — no edge/slave distinction.
-  if [[ "$MODE" == "master" || "$MODE" == "local" ]]; then
-    log "Labelling node as master…"
-    sleep 3  # swarm needs a moment
-    local id
-    id=$(docker node ls --format '{{.Self}}' 2>/dev/null | head -n1 || hostname)
-    docker node update --label-add hostaffin_role=master "$id" || \
-      warn "Could not label node (acceptable in single-node mode)"
+  if [[ "$MODE" != "master" && "$MODE" != "local" ]]; then
+    return 0
+  fi
+  log "Labelling node as master…"
+  # Wait for the node to appear in `docker node ls` (swarm convergence).
+  local self=""
+  local i=0
+  while [[ $i -lt 30 ]]; do
+    self=$(docker node ls --format '{{.Self}} {{.ID}}' 2>/dev/null \
+           | awk '$1=="true"{print $2; exit}')
+    [[ -n "$self" ]] && break
+    sleep 1
+    i=$((i + 1))
+  done
+  if [[ -z "$self" ]]; then
+    warn "Could not determine self node id after 30s; falling back to hostname"
+    self=$(hostname)
+  fi
+  if docker node update --label-add hostaffin_role=master "$self"; then
     ok "Node labelled"
+  else
+    warn "Could not label node (acceptable in single-node mode)"
   fi
 }
 
 create_overlay_network() {
   hr; log "Creating overlay network hostaffin_edge…"
-  docker network create --driver overlay --attachable hostaffin_edge 2>/dev/null || \
+  if docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx 'hostaffin_edge'; then
     ok "Network already exists"
+  else
+    docker network create --driver overlay --attachable hostaffin_edge
+    ok "Network created"
+  fi
 }
 
 # ───────────────────────────── SELinux ──────────────────────────────────
 configure_selinux() {
-  if command -v getenforce >/dev/null && [[ "$(getenforce)" == "Enforcing" ]]; then
-    log "Adjusting SELinux for Docker/Traefik…"
-    setsebool -P container_manage_cgroup 1 || true
-    setsebool -P domain_can_mmap_files 1 || true
-    # Allow Traefik to bind low ports via systemd
-    cat >/etc/systemd/system/traefik.service.d/override.conf <<'EOF' 2>/dev/null || true
+  if ! command -v getenforce >/dev/null; then
+    log "SELinux not installed; skipping"
+    return 0
+  fi
+  if [[ "$(getenforce)" != "Enforcing" ]]; then
+    warn "SELinux is not enforcing; skipping"
+    return 0
+  fi
+  hr; log "Adjusting SELinux for Docker/Traefik…"
+  setsebool -P container_manage_cgroup 1 || true
+  setsebool -P domain_can_mmap_files 1 || true
+  mkdir -p /etc/systemd/system/traefik.service.d
+  cat >/etc/systemd/system/traefik.service.d/override.conf <<'EOF' 2>/dev/null || true
 [Service]
 NoNewPrivileges=no
 EOF
-    # Custom module so traefik can write /letsencrypt + acme.json
-    if ! semodule -l | grep -q hostaffin; then
-      cat >/tmp/hostaffin.pp <<'EOF'
+  # Custom module so traefik can write /letsencrypt + acme.json
+  if ! semodule -l 2>/dev/null | grep -qx 'hostaffin'; then
+    cat >/tmp/hostaffin.pp <<'EOF'
 module hostaffin 1.0;
 require {
   type unconfined_service_t;
@@ -371,14 +434,11 @@ allow unconfined_service_t etc_t:file { create open read write getattr setattr u
 allow unconfined_service_t var_log_t:dir { add_name create open read write getattr setattr remove_name rmdir search };
 allow unconfined_service_t container_file_t:dir { add_name create open read write getattr setattr remove_name rmdir search };
 EOF
-      checkmodule -M -m -o /tmp/hostaffin.mod /tmp/hostaffin.pp 2>/dev/null || true
-      semodule_package -o /tmp/hostaffin.pp /tmp/hostaffin.mod 2>/dev/null || true
-      semodule -i /tmp/hostaffin.pp 2>/dev/null || true
-    fi
-    ok "SELinux adjusted"
-  else
-    warn "SELinux is not enforcing; skipping"
+    checkmodule -M -m -o /tmp/hostaffin.mod /tmp/hostaffin.pp 2>/dev/null || true
+    semodule_package -o /tmp/hostaffin.pp /tmp/hostaffin.mod 2>/dev/null || true
+    semodule -i /tmp/hostaffin.pp 2>/dev/null || true
   fi
+  ok "SELinux adjusted"
 }
 
 # ─────────────────────────── Project layout ─────────────────────────────
@@ -406,6 +466,9 @@ write_env() {
   if [[ -z "$NODE_ID" ]]; then
     NODE_ID="master-$(hostname -s | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')-01"
   fi
+
+  # Write the env file with placeholders for the multi-line PEM blocks.
+  # We splice them in afterwards to keep them safely single-line in shell syntax.
   cat >"$ENV_FILE" <<EOF
 # Hostaffin sGTM Platform — environment
 # Generated by installer on $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -422,8 +485,8 @@ REDIS_URL=redis://redis:6379/0
 CLICKHOUSE_URL=clickhouse://clickhouse:9000
 CLICKHOUSE_DB=sgtm
 
-JWT_PRIVATE_KEY_PEM=\$(cat $PROJECT_DIR/control-plane/keys/private.pem)
-JWT_PUBLIC_KEY_PEM=\$(cat $PROJECT_DIR/control-plane/keys/public.pem)
+JWT_PRIVATE_KEY_PEM=__JWT_PRIVATE_KEY_PEM__
+JWT_PUBLIC_KEY_PEM=__JWT_PUBLIC_KEY_PEM__
 JWT_ACCESS_TTL=15m
 JWT_REFRESH_TTL=168h
 
@@ -440,17 +503,74 @@ ADMIN_BOOTSTRAP_PASSWORD=$admin_pwd
 # If a GHCR token was provided, use it; otherwise the runtime pulls anonymous.
 GITHUB_TOKEN=$GITHUB_TOKEN
 EOF
+
+  # Build the inline PEM block. We wrap it in a single shell-quoted line that
+  # contains literal "\n" sequences; the runtime (Go's env reader) decodes
+  # those back to real newlines. Doing it this way keeps the env file valid
+  # shell syntax without multi-line quoting headaches.
+  {
+    printf 'JWT_PRIVATE_KEY_PEM="'
+    printf '%s\\n' '-----BEGIN RSA PRIVATE KEY-----'
+    # strip existing newlines if any, then re-emit
+    tr -d '\n' < "$PROJECT_DIR/control-plane/keys/private.pem" \
+      | fold -w 64 \
+      | sed 's/.*/&\\n/'
+    printf '%s\\n' '-----END RSA PRIVATE KEY-----'
+    printf '"\n'
+    printf 'JWT_PUBLIC_KEY_PEM="'
+    printf '%s\\n' '-----BEGIN PUBLIC KEY-----'
+    tr -d '\n' < "$PROJECT_DIR/control-plane/keys/public.pem" \
+      | fold -w 64 \
+      | sed 's/.*/&\\n/'
+    printf '%s\\n' '-----END PUBLIC KEY-----'
+    printf '"\n'
+  } > "$ENV_FILE.pems"
+
+  # Splice the PEM block in by replacing the placeholders we wrote above.
+  # Prefer python3 (handles multi-char newlines safely); fall back to awk.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$ENV_FILE" "$ENV_FILE.pems" <<'PYEOF'
+import sys, pathlib
+env, pems = sys.argv[1], sys.argv[2]
+pem_text = pathlib.Path(pems).read_text()
+text = pathlib.Path(env).read_text()
+text = text.replace("__JWT_PRIVATE_KEY_PEM__", "").replace("__JWT_PUBLIC_KEY_PEM__", "")
+# Insert the PEM block before the JWT_ACCESS_TTL line so the file stays tidy.
+needle = "JWT_ACCESS_TTL=15m\n"
+text = text.replace(needle, pem_text + needle, 1)
+pathlib.Path(env).write_text(text)
+PYEOF
+  else
+    awk -v pems="$ENV_FILE.pems" '
+      /__JWT_PRIVATE_KEY_PEM__/ { while ((getline line < pems) > 0) print line; next }
+      /__JWT_PUBLIC_KEY_PEM__/  { while ((getline line < pems) > 0) print line; next }
+      { print }
+    ' "$ENV_FILE" > "$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
+  fi
+  rm -f "$ENV_FILE.pems"
+
+  # Final sanity: there must be no remaining placeholder.
+  if grep -q '__JWT_' "$ENV_FILE" 2>/dev/null; then
+    err "Failed to inline JWT keys into $ENV_FILE — placeholders remain."
+    err "Check that python3 is installed, or fix the awk splice above."
+    exit 1
+  fi
+
   chmod 0640 "$ENV_FILE"
   ok "Environment written to $ENV_FILE"
-  warn "Admin password: $admin_pwd  (save it now!)"
-  echo "$admin_pwd" > /root/.hostaffin-admin-password
-  chmod 0600 /root/.hostaffin-admin-password
+  # Print the password ONLY to the terminal, never to the log file.
+  if [[ -t 2 ]]; then
+    printf '\n\033[1;33m[warn]\033[0m Admin password: \033[1m%s\033[0m  (save it now!)\n' "$admin_pwd" >&2
+  fi
+  printf '%s' "$admin_pwd" > "$ADMIN_PWD_FILE"
+  chmod 0600 "$ADMIN_PWD_FILE"
 }
 
 # ─────────────────────────── Traefik (master mode) ────────────────────────
 install_traefik_systemd() {
   if [[ "$MODE" != "master" && "$MODE" != "local" ]]; then return 0; fi
   hr; log "Installing Traefik reverse proxy…"
+  mkdir -p /etc/traefik
   cat >/etc/traefik/traefik.yml <<EOF
 api:
   dashboard: true
@@ -517,19 +637,27 @@ install_node_agent_systemd() {
   if [[ ! -x /usr/local/bin/hostaffin-node-agent ]]; then
     # Try to download a prebuilt; if not, build locally (requires Go).
     local url="https://github.com/hostaffin/sgtm-platform/releases/latest/download/hostaffin-node-agent.linux-amd64"
-    if ! curl -fsSL -o /usr/local/bin/hostaffin-node-agent "$url"; then
+    if curl -fsSL -o /usr/local/bin/hostaffin-node-agent "$url"; then
+      ok "Downloaded prebuilt node-agent"
+    else
       warn "Could not download prebuilt; attempting local build (Go ${GOLANG_VERSION} required)…"
       install_go_if_missing
-      ( cd "$PROJECT_DIR" 2>/dev/null && [[ -d node-agent ]] || true )
-      if [[ -d "$PROJECT_DIR/node-agent" ]]; then
-        cd "$PROJECT_DIR/node-agent"
-        go build -trimpath -ldflags="-s -w" -o /usr/local/bin/hostaffin-node-agent ./cmd/agent
-      else
-        err "node-agent source not found at $PROJECT_DIR/node-agent"
+      # Always (re)export PATH so the freshly-installed `go` is visible.
+      export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"
+      hash -r 2>/dev/null || true
+      if [[ ! -d "$PROJECT_DIR/node-agent/cmd/agent" ]]; then
+        err "node-agent source not found at $PROJECT_DIR/node-agent/cmd/agent"
+        err "Re-run after placing the source tree under $PROJECT_DIR,"
+        err "or provide a working prebuilt URL."
         exit 1
       fi
+      ( cd "$PROJECT_DIR/node-agent" \
+          && go build -trimpath -ldflags="-s -w" \
+                -o /usr/local/bin/hostaffin-node-agent ./cmd/agent )
     fi
     chmod 0755 /usr/local/bin/hostaffin-node-agent
+  else
+    ok "Node agent binary already present"
   fi
   cat >/etc/systemd/system/hostaffin-node-agent.service <<'EOF'
 [Unit]
@@ -559,14 +687,22 @@ install_go_if_missing() {
   warn "Installing Go ${GOLANG_VERSION}…"
   local arch
   arch=$(uname -m)
-  [[ "$arch" == "x86_64" ]] && arch="amd64"
-  [[ "$arch" == "aarch64" ]] && arch="arm64"
+  case "$arch" in
+    x86_64)  arch="amd64" ;;
+    aarch64) arch="arm64" ;;
+    *)
+      err "Unsupported arch for Go: $arch (only amd64/arm64 are downloadable)"
+      return 1
+      ;;
+  esac
   local pkg="go${GOLANG_VERSION}.linux-${arch}.tar.gz"
   curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/${pkg}"
   rm -rf /usr/local/go
   tar -C /usr/local -xzf /tmp/go.tgz
   ln -sf /usr/local/go/bin/go /usr/local/bin/go
   ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  export PATH="/usr/local/go/bin:$PATH"
+  hash -r 2>/dev/null || true
   go version
 }
 
@@ -574,28 +710,48 @@ install_go_if_missing() {
 build_or_pull_images() {
   if [[ "$MODE" != "local" && "$MODE" != "controlplane" ]]; then return 0; fi
   hr; log "Preparing control-plane + admin-panel images…"
-  # If we have a GHCR token and no local source, pull from the registry.
-  if [[ -n "$GITHUB_TOKEN" && ! -d "$PROJECT_DIR/control-plane" ]]; then
-    log "Pulling control-plane image from ${GHCR_IMAGE_BASE}…"
-    echo "$GITHUB_TOKEN" | docker login "$GHCR_IMAGE_BASE" -u x-access-token --password-stdin >/dev/null 2>&1 || true
-    docker pull "${GHCR_IMAGE_BASE}/control-plane:latest" \
-      && docker tag "${GHCR_IMAGE_BASE}/control-plane:latest" hostaffin/control-plane:latest || true
+  # If we have a GHCR token, try to pull first (avoids building from source).
+  if [[ -n "$GITHUB_TOKEN" ]]; then
+    log "Logging in to ${GHCR_IMAGE_BASE}…"
+    if echo "$GITHUB_TOKEN" \
+       | docker login "$GHCR_IMAGE_BASE" -u x-access-token --password-stdin >/dev/null 2>&1; then
+      log "Pulling control-plane image from ${GHCR_IMAGE_BASE}…"
+      if ! docker pull "${GHCR_IMAGE_BASE}/control-plane:latest"; then
+        warn "control-plane pull failed; will fall back to source build"
+      else
+        docker tag "${GHCR_IMAGE_BASE}/control-plane:latest" hostaffin/control-plane:latest
+      fi
+      log "Pulling admin-panel image from ${GHCR_IMAGE_BASE}…"
+      if ! docker pull "${GHCR_IMAGE_BASE}/admin-panel:latest"; then
+        warn "admin-panel pull failed; will fall back to source build"
+      else
+        docker tag "${GHCR_IMAGE_BASE}/admin-panel:latest" hostaffin/admin-panel:latest
+      fi
+    else
+      warn "GHCR login failed; will build from local source instead"
+    fi
   fi
-  if [[ -d "$PROJECT_DIR/control-plane" ]]; then
+  # Build from source if a corresponding directory exists and the image is
+  # not already present (from a successful pull above).
+  if [[ -d "$PROJECT_DIR/control-plane" ]] \
+     && ! docker image inspect hostaffin/control-plane:latest >/dev/null 2>&1; then
     log "Building control-plane from source…"
     install_go_if_missing
-    cd "$PROJECT_DIR/control-plane"
-    docker build -t hostaffin/control-plane:latest .
+    export PATH="/usr/local/go/bin:/usr/local/bin:$PATH"
+    hash -r 2>/dev/null || true
+    ( cd "$PROJECT_DIR/control-plane" \
+        && docker build -t hostaffin/control-plane:latest . )
   fi
-  if [[ -d "$PROJECT_DIR/admin-panel" ]]; then
+  if [[ -d "$PROJECT_DIR/admin-panel" ]] \
+     && ! docker image inspect hostaffin/admin-panel:latest >/dev/null 2>&1; then
     log "Building admin-panel from source…"
     if ! command -v node >/dev/null; then
       warn "Installing Node.js ${NODE_VERSION}…"
-      curl -fsSL https://rpm.nodesource.com/setup_${NODE_VERSION}.x | bash -
+      curl -fsSL "https://rpm.nodesource.com/setup_${NODE_VERSION}.x" | bash -
       pm_install nodejs
     fi
-    cd "$PROJECT_DIR/admin-panel"
-    docker build -t hostaffin/admin-panel:latest .
+    ( cd "$PROJECT_DIR/admin-panel" \
+        && docker build -t hostaffin/admin-panel:latest . )
   fi
   ok "Images prepared"
 }
@@ -608,6 +764,7 @@ write_compose_stack() {
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: hostaffin-postgres
     environment:
       POSTGRES_USER: sgtm
       POSTGRES_PASSWORD: sgtm
@@ -617,17 +774,21 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sgtm -d sgtm"]
       interval: 5s
+      timeout: 5s
       retries: 20
 
   redis:
     image: redis:7-alpine
+    container_name: hostaffin-redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
       retries: 20
 
   clickhouse:
     image: clickhouse/clickhouse-server:24-alpine
+    container_name: hostaffin-clickhouse
     environment:
       CLICKHOUSE_DB: sgtm
       CLICKHOUSE_USER: sgtm
@@ -639,6 +800,7 @@ services:
 
   control-plane:
     image: hostaffin/control-plane:latest
+    container_name: hostaffin-control-plane
     depends_on:
       postgres:    { condition: service_healthy }
       redis:       { condition: service_healthy }
@@ -650,6 +812,7 @@ services:
 
   worker:
     image: hostaffin/control-plane:latest
+    container_name: hostaffin-worker
     depends_on:
       postgres:    { condition: service_healthy }
       redis:       { condition: service_healthy }
@@ -659,6 +822,7 @@ services:
 
   admin-panel:
     image: hostaffin/admin-panel:latest
+    container_name: hostaffin-admin-panel
     depends_on:
       - control-plane
     environment:
@@ -682,8 +846,7 @@ EOF
 deploy_stack() {
   if [[ "$MODE" != "local" && "$MODE" != "controlplane" ]]; then return 0; fi
   hr; log "Deploying stack…"
-  cd "$PROJECT_DIR"
-  docker compose up -d
+  ( cd "$PROJECT_DIR" && docker compose up -d )
   ok "Stack deployed"
 }
 
@@ -691,16 +854,23 @@ run_migrations() {
   if [[ "$MODE" != "local" && "$MODE" != "controlplane" ]]; then return 0; fi
   hr; log "Waiting for Postgres to be healthy…"
   local i=0
-  until docker exec sgtm-postgres pg_isready -U sgtm -d sgtm 2>/dev/null; do
-    i=$((i+1)); [[ $i -gt 60 ]] && { err "Postgres did not become healthy"; exit 1; }
+  until docker exec hostaffin-postgres pg_isready -U sgtm -d sgtm >/dev/null 2>&1; do
+    i=$((i+1))
+    if [[ $i -gt 60 ]]; then
+      err "Postgres did not become healthy"
+      err "Try: docker logs hostaffin-postgres"
+      exit 1
+    fi
     sleep 2
   done
   ok "Postgres ready"
   log "Running migrations + seed…"
+  # Containers are named explicitly in write_compose_stack; look them up.
   local cpid
-  cpid=$(docker ps -q -f name=hostaffin-control-plane | head -n1)
+  cpid=$(docker ps -q -f name=^hostaffin-control-plane$ | head -n1)
   if [[ -z "$cpid" ]]; then
-    err "control-plane container not running"
+    err "control-plane container not running (expected: hostaffin-control-plane)"
+    err "Try: cd $PROJECT_DIR && docker compose ps"
     exit 1
   fi
   docker exec "$cpid" /app/migrate up
@@ -713,7 +883,8 @@ health_check() {
   hr; log "Running health checks…"
   sleep 3
   local api_ok=false
-  for i in {1..20}; do
+  local i
+  for i in $(seq 1 20); do
     if curl -fsSL "http://localhost:8080/healthz" >/dev/null 2>&1; then
       api_ok=true; break
     fi
@@ -721,23 +892,30 @@ health_check() {
   done
   if $api_ok; then ok "Control plane API healthy"; else warn "API not yet responding"; fi
   if command -v systemctl >/dev/null; then
-    if systemctl is-active --quiet hostaffin-node-agent; then
+    if systemctl is-active --quiet hostaffin-node-agent 2>/dev/null; then
       ok "node-agent running"
     else
-      warn "node-agent NOT running"
+      warn "node-agent NOT running (expected if MODE != local/master)"
     fi
-    if systemctl is-active --quiet hostaffin-traefik; then
+    if systemctl is-active --quiet hostaffin-traefik 2>/dev/null; then
       ok "traefik running"
     else
-      warn "traefik NOT running"
+      warn "traefik NOT running (expected if MODE != local/master)"
     fi
   fi
-  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+  docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
   ok "Health check complete"
 }
 
 # ─────────────────────────── Summary ────────────────────────────────────
 print_summary() {
+  local BOLD='\033[1m'
+  local GREEN='\033[1;32m'
+  local RESET='\033[0m'
+  local ip
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -z "$ip" ]] && ip="<this-host>"
+
   cat <<EOF
 
 ${BOLD}${GREEN}
@@ -749,12 +927,12 @@ ${RESET}
 Mode:                  $MODE
 Project dir:           $PROJECT_DIR
 Env file:              $ENV_FILE
-Admin URL:             http://$(hostname -I | awk '{print $1}'):3000
-API URL:               http://$(hostname -I | awk '{print $1}'):8080
+Admin URL:             http://${ip}:3000
+API URL:               http://${ip}:8080
 Admin login:           admin@hostaffin.local
-Admin password:        $(cat /root/.hostaffin-admin-password 2>/dev/null || echo 'see /etc/hostaffin/hostaffin.env')
+Admin password:        $(cat "$ADMIN_PWD_FILE" 2>/dev/null || echo "(see $ENV_FILE)")
 Node ID:               $NODE_ID
-Node API key:          $(grep '^NODE_API_KEY=' $ENV_FILE | cut -d= -f2-)
+Node API key:          $(grep '^NODE_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo '(unset)')
 
 Useful commands:
   systemctl status hostaffin-node-agent
@@ -790,7 +968,7 @@ install_docker_completion
 prepare_project
 write_env
 ensure_swarm
-label_node_edge
+label_node_master
 create_overlay_network
 build_or_pull_images
 write_compose_stack

@@ -23,8 +23,8 @@
   register: deploy
   changed_when: deploy.rc == 0
 
-- name: Label this node as edge
-  command: "docker node update --label-add hostaffin_role=edge {{ ansible_hostname }}"
+- name: Label this node as master
+  command: "docker node update --label-add hostaffin_role=master {{ ansible_hostname }}"
   delegate_to: "{{ groups['managers'][0] }}"
   ignore_errors: yes
 

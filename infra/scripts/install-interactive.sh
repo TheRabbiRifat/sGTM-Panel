@@ -3,8 +3,8 @@
 # install-interactive.sh — Hostaffin sGTM Platform interactive wizard
 # ───────────────────────────────────────────────────────────────────────
 # A guided, ASCII-UI installer that walks you through every important
-# decision, then hands off to the canonical install-almalinux9.sh script
-# (the underlying installer, which now supports any YUM-family distro and
+# decision, then hands off to the canonical install-yum.sh script
+# (the underlying installer, which supports any YUM-family distro and
 # auto-detects dnf vs yum via lib-pm.sh).
 #
 # It prompts for:
@@ -33,7 +33,33 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Handle --help before sourcing UI libs, so docs read on any host work.
+for _arg in "$@"; do
+  if [[ "$_arg" == "-h" || "$_arg" == "--help" ]]; then
+    awk '
+      /^# ─/{ i++; next }
+      i==2 { sub(/^# ?/, ""); print }
+      i>=3 { exit }
+    ' "$0"
+    exit 0
+  fi
+done
+
+# Resolve the script's directory even when run via `curl ... | sudo bash -s --`,
+# where BASH_SOURCE[0] is unset because bash is reading the script from stdin.
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd || true)"
+if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/lib-ui.sh" ]]; then
+  SCRIPT_URL="${HOSTAFFIN_INSTALL_URL:-https://raw.githubusercontent.com/TheRabbiRifat/sGTM-Panel/main/infra/scripts}"
+  TMP_LIB_DIR="$(mktemp -d)"
+  printf '\033[1;34m[install]\033[0m %s\n' "Downloading lib-ui.sh from $SCRIPT_URL ..." >&2
+  if curl -fsSL "$SCRIPT_URL/lib-ui.sh" -o "$TMP_LIB_DIR/lib-ui.sh"; then
+    SCRIPT_DIR="$TMP_LIB_DIR"
+  else
+    printf '\033[1;31m[err  ]\033[0m %s\n' "cannot locate lib-ui.sh (tried '$SCRIPT_DIR' and $SCRIPT_URL)" >&2
+    exit 1
+  fi
+fi
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib-ui.sh"
 
@@ -62,9 +88,7 @@ while [[ $# -gt 0 ]]; do
     --config)          CONFIG_FILE="$2"; shift 2 ;;
     --save-config)     SAVE_CONFIG="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE_CLI=true; shift ;;
-    -h|--help)
-      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
+    -h|--help)         exit 0 ;;  # handled before script body
     *) ui_err "Unknown argument: $1"; exit 2 ;;
   esac
 done
@@ -263,7 +287,7 @@ EOF
 }
 
 ask_control_plane_url() {
-  ui_step_banner 4 "Control plane URL"
+  ui_step_banner 5 "Control plane URL"
   cat <<EOF >&2
 ${C_DIM}This is the URL node agents and admin panel use to reach the
 control plane's API. If installing locally, use the hostname/IP
@@ -281,7 +305,7 @@ EOF
 }
 
 ask_admin() {
-  ui_step_banner 5 "Admin account"
+  ui_step_banner 6 "Admin account"
   cat <<EOF >&2
 ${C_DIM}The super-admin account for the admin panel.${C_RESET}
 EOF
@@ -311,7 +335,7 @@ EOF
 }
 
 ask_optional() {
-  ui_step_banner 6 "Optional: image registry"
+  ui_step_banner 7 "Optional: image registry"
   cat <<EOF >&2
 ${C_DIM}If you have a GitHub Container Registry token, the installer
 can pull prebuilt control-plane and admin-panel images instead of
@@ -323,7 +347,7 @@ EOF
 }
 
 ask_advanced() {
-  ui_step_banner 7 "Advanced options"
+  ui_step_banner 8 "Advanced options"
   echo "${C_DIM}Tune these only if you know what you're doing.${C_RESET}" >&2
   echo >&2
   if ui_confirm "Skip firewall configuration?" "n"; then
@@ -333,14 +357,15 @@ ask_advanced() {
     SKIP_SWAP=true
   fi
   if [[ "$MODE" == "local" ]]; then
-    local default_id="master-$(hostname -s | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')-01"
+    local default_id
+    default_id="master-$(hostname -s | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')-01"
     NODE_ID=$(ui_prompt "Node ID" "${NODE_ID:-$default_id}")
   fi
   ui_step_done
 }
 
 review_and_confirm() {
-  ui_step_banner 8 "Review"
+  ui_step_banner 9 "Review"
   cat <<EOF >&2
 ${C_BOLD}${C_BCYAN}Please review your answers:${C_RESET}
 ${C_DIM}──────────────────────────────────────────────────────────────────────${C_RESET}
@@ -404,7 +429,7 @@ run_installer() {
   args+=( "--non-interactive" )
 
   HOSTAFFIN_DNS_WILDCARD="$DNS_WILDCARD" \
-    "$SCRIPT_DIR/install-almalinux9.sh" "${args[@]}"
+    "$SCRIPT_DIR/install-yum.sh" "${args[@]}"
 }
 
 # ──────────────────────────── Final summary ─────────────────────────────
@@ -476,7 +501,7 @@ if [[ -n "$CONFIG_FILE" ]] || $NON_INTERACTIVE_CLI; then
   fi
 else
   wizard_welcome
-  ui_init_steps 8
+  ui_init_steps 9
   ask_timezone
   ask_dns_wildcard
   ask_mode

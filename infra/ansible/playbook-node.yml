@@ -4,20 +4,24 @@
 # - Installs Docker + node-agent
 # - Joins the Docker Swarm (if manager)
 # - Optionally deploys Traefik
+#
+# Every node in the cluster is a MASTER node — there is no separate
+# "edge" or "worker" role. Set node_role to "master" to also deploy
+# Traefik on this node, or to "controlplane" to skip Traefik/agent.
 # ─────────────────────────────────────────────
 - name: Bootstrap Hostaffin sGTM node
   hosts: nodes
   become: true
   vars:
-    node_role: edge                # edge | worker
+    node_role: master              # master | controlplane
     swarm_manager: ""              # host:port of an existing manager
     control_plane_url: "https://control-plane.hostaffin.com"
-    node_id: "edge-fra-01"
+    node_id: "master-fra-01"
     node_api_key: "REPLACE_ME"
   roles:
-    - { role: docker,   when: true }
-    - { role: traefik,  when: node_role == 'edge' }
-    - { role: node-agent }
+    - { role: docker,      when: true }
+    - { role: traefik,     when: node_role == 'master' }
+    - { role: node-agent,  when: node_role != 'controlplane' }
 
 - name: Join swarm (managers)
   hosts: managers
